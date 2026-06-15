@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <radialGradient id="kb-bg" cx="50%" cy="72%" r="58%">
+      <stop offset="0%" stop-color="#0c4a6e"/>
+      <stop offset="55%" stop-color="#082f49"/>
+      <stop offset="100%" stop-color="#020617"/>
+    </radialGradient>
+    <linearGradient id="kb-ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#67e8f9"/>
+      <stop offset="50%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="kb-arrow" x1="50%" y1="100%" x2="50%" y2="0%">
+      <stop offset="0%" stop-color="#7dd3fc"/>
+      <stop offset="45%" stop-color="#e0f2fe"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+    <linearGradient id="kb-wind" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#67e8f9" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="kb-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <circle cx="64" cy="64" r="58" fill="url(#kb-bg)" stroke="url(#kb-ring)" stroke-width="4"/>
+  <circle cx="64" cy="64" r="52" fill="none" stroke="#0ea5e9" stroke-opacity="0.25" stroke-width="1.5"/>
+
+  <!-- 
+GA -->
+  <path d="M28 88 C36 72, 40 58, 34 42" stroke="url(#kb-wind)" stroke-width="5" stroke-linecap="round" filter="url(#kb-glow)"/>
+  <path d="M100 88 C92 72, 88 58, 94 42" stroke="url(#kb-wind)" stroke-width="5" stroke-linecap="round" filter="url(#kb-glow)"/>
+  <path d="M46 92 C52 78, 54 64, 50 48" stroke="#bae6fd" stroke-opacity="0.55" stroke-width="3" stroke-linecap="round"/>
+  <path d="M82 92 C76 78, 74 64, 78 48" stroke="#bae6fd" stroke-opacity="0.55" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- ;
+G�4 -->
+  <path d="M64 96 L64 28 L48 44 M64 28 L80 44" stroke="url(#kb-arrow)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" filter="url(#kb-glow)"/>
+
+  <!-- ��ބ�jq -->
+  <g transform="translate(64 34) rotate(-18)" filter="url(#kb-glow)">
+    <circle cx="0" cy="-10" r="7" fill="#e0f2fe"/>
+    <path d="M-8 0 C-4 -2, 4 -2, 8 0 L10 14 C6 16, -6 16, -10 14 Z" fill="#7dd3fc"/>
+    <path d="M-10 6 L-18 0 M10 6 L18 -2" stroke="#bae6fd" stroke-width="3" stroke-linecap="round"/>
+    <path d="M-2 14 L-6 24 M2 14 L8 22" stroke="#bae6fd" stroke-width="3" stroke-linecap="round"/>
+  </g>
+
+  <!-- ��� -->
+  <ellipse cx="64" cy="98" rx="22" ry="6" fill="#38bdf8" fill-opacity="0.35"/>
+  <ellipse cx="64" cy="98" rx="14" ry="3.5" fill="#e0f2fe" fill-opacity="0.5"/>
+</svg>

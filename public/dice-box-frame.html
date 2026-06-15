@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dice Box D20</title>
+    <style>
+      html,
+      body,
+      #dice {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: transparent !important;
+        background-color: transparent !important;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        color-scheme: normal;
+      }
+
+      #dice {
+        position: relative;
+        transition: opacity 260ms ease, filter 260ms ease;
+      }
+
+      #result-badge {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        bottom: auto;
+        transform: translateX(-50%);
+        display: none !important;
+        border: 1px solid rgba(221, 214, 254, 0.5);
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.78);
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32);
+        color: #ede9fe;
+        font: 700 13px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0;
+        padding: 6px 10px;
+        pointer-events: none;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+        white-space: nowrap;
+      }
+
+      canvas {
+        display: block;
+        width: 100% !important;
+        height: 100% !important;
+        background: transparent !important;
+        background-color: transparent !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="dice"></div>
+    <div id="result-badge"></div>
+    <pre id="dice-debug" style="display:none"></pre>
+    <script type="module">
+      const params = new URLSearchParams(window.location.search)
+      const diceScale = Number(params.get('scale')) || 5
+      const showBadge = false
+      const seedText = params.get('seed') || `${Date.now()}`
+      const autoroll = params.get('autoroll')
+      const autorollValue = params.get('value')
+      let boxPromise = null
+      let DiceBoxCtor = null
+      let activeD20RequestId = null
+      const completedD20RequestIds = new Set()
+      const frameStartedAt = Date.now()
+
+      function debugDice(requestId, stage, details = {}) {
+        const payload = {
+          type: 'dice-box-debug',
+          requestId,
+          stage,
+          elapsedMs: Date.now() - frameStartedAt,
+          seed: seedText,
+          ...details,
+        }
+        window.__diceDebug = Array.isArray(window.__diceDebug) ? window.__diceDebug : []
+        window.__diceDebug.push(payload)
+        window.__diceDebug = window.__diceDebug.slice(-120)
+        const debugEl = document.getElementById('dice-debug')
+        if (debugEl) debugEl.textContent = JSON.stringify(window.__diceDebug)
+        console.info('[dice-box-frame]', payload)
+        try {
+          window.parent.postMessage(payload, window.location.origin)
+        } catch (error) {
+          console.warn('[dice-box-frame] debug postMessage failed', error)
+        }
+      }
+
+      function withTimeout(promise, ms, label, requestId) {
+        let timer = 0
+        const timeout = new Promise((_, reject) => {
+          timer = window.setTimeout(() => {
+            debugDice(requestId, `${label}:timeout`, { timeoutMs: ms })
+            reject(new Error(`${label} timed out after ${ms}ms`))
+          }, ms)
+        })
+        return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timer))
+      }
+
+      function hashSeed(text) {
+        let hash = 2166136261
+        for (let i = 0; i < text.length; i += 1) {
+          hash ^= text.charCodeAt(i)
+          hash = Math.imul(hash, 16777619)
+        }
+        return hash >>> 0
+      }
+
+      function createSeededRandom(seed) {
+        let state = seed || 1
+        return () => {
+          state |= 0
+          state = (state + 0x6d2b79f5) | 0
+          let next = Math.imul(state ^ (state >>> 15), 1 | state)
+          next ^= next + Math.imul(next ^ (next >>> 7), 61 | next)
+          return ((next ^ (next >>> 14)) >>> 0) / 4294967296
+        }
+      }
+
+      const seededRandom = createSeededRandom(hashSeed(seedText))
+      Math.random = seededRandom
+
+      function clampDie(value, sides) {
+        const rounded = Math.round(Number(value))
+        if (!Number.isFinite(rounded)) return 1 + Math.floor(Math.random() * sides)
+        return Math.max(1, Math.min(sides, rounded))
+      }
+
+      function forcedList(values, qty, sides) {
+        if (!Array.isArray(values)) return []
+        return values
+          .slice(0, qty)
+          .filter((value) => value != null && Number.isFinite(Number(value)))
+          .map((value) => clampDie(value, sides))
+      }
+
+      function readDieValues(results) {
+        const stack = Array.isArray(results) ? [...results] : [results]
+        const values = []
+        while (stack.length > 0) {
+          const item = stack.shift()
+          if (!item || typeof item !== 'object') continue
+          const rolls = item.rolls ?? item.rollsArray
+          if (Array.isArray(rolls) && rolls.length > 0) {
+            stack.push(...rolls)
+            continue
+          }
+          const value = item.value ?? item.result
+          if (typeof value === 'number' && Number.isFinite(value)) values.push(value)
+        }
+        return values
+      }
+
+      function hideResultBadge() {
+        const badge = document.getElementById('result-badge')
+        if (!badge) return
+        badge.style.display = 'none'
+        badge.textContent = ''
+        const dice = document.getElementById('dice')
+        if (dice) {
+          dice.style.opacity = '1'
+          dice.style.filter = 'none'
+        }
+      }
+
+      function showResultBadge(values) {
+        return
+        if (!showBadge) return
+        const dice = document.getElementById('dice')
+        if (dice) {
+          dice.style.opacity = '0.82'
+          dice.style.filter = 'saturate(1.05)'
+        }
+        const badge = document.getElementById('result-badge')
+        if (!badge) return
+        const text = Array.isArray(values) && values.length > 0 ? values.join(', ') : ''
+        if (!text) return
+        badge.textContent = `\u9ab0\u9762 ${text}`
+        badge.style.display = 'block'
+      }
+
+      function d20ClipCacheKey(value) {
+        return `stars:dice-clip:d20:v1:${clampDie(value, 20)}:${seedText}`
+      }
+
+      function readD20ClipCache(value) {
+        try {
+          const raw = window.localStorage.getItem(d20ClipCacheKey(value))
+          return raw ? JSON.parse(raw) : null
+        } catch {
+          return null
+        }
+      }
+
+      function writeD20ClipCache(value, metadata) {
+        try {
+          window.localStorage.setItem(
+            d20ClipCacheKey(value),
+            JSON.stringify({
+              value: clampDie(value, 20),
+              updatedAt: Date.now(),
+              ...metadata,
+            }),
+          )
+        } catch {
+          // Cache failure should never block combat.
+        }
+      }
+
+      function randomizeThrow(box, random = Math.random) {
+        const force = 4.8 + random() * 1.4
+        box.updateConfig({
+          throwForce: force,
+          spinForce: force + random() * 0.7,
+          startingHeight: 4.6 + random() * 1.4,
+          friction: 0.96,
+          restitution: 0.01,
+          angularDamping: 0.78,
+          linearDamping: 0.72,
+        })
+      }
+
+      async function getBox() {
+        if (!boxPromise) {
+          boxPromise = (async () => {
+            if (!DiceBoxCtor) {
+              debugDice('init', 'import:start')
+              DiceBoxCtor = (await import('/vendor/dice-box/dice-box.es.min.js')).default
+              debugDice('init', 'import:done')
+            }
+            const box = new DiceBoxCtor({
+              container: '#dice',
+              assetPath: '/assets/',
+              theme: 'default',
+              themeColor: '#7c3aed',
+              scale: diceScale,
+              gravity: 1,
+              mass: 1,
+              friction: 0.82,
+              restitution: 0.08,
+              angularDamping: 0.58,
+              linearDamping: 0.52,
+              spinForce: 7,
+              throwForce: 7,
+              startingHeight: 7,
+              settleTimeout: 5600,
+              offscreen: false,
+              enableShadows: true,
+              shadowTransparency: 0.58,
+            })
+            debugDice('init', 'box-init:start')
+            await box.init()
+            debugDice('init', 'box-init:done')
+            return box
+          })()
+        }
+        return boxPromise
+      }
+
+      async function rollD20(requestId, forcedValue, rollSeed, replayFrames, replayLive = false) {
+        if (activeD20RequestId === requestId || completedD20RequestIds.has(requestId)) {
+          debugDice(requestId, 'd20:duplicate:ignored', { activeD20RequestId })
+          return
+        }
+        activeD20RequestId = requestId
+        try {
+          const effectiveSeed = String(rollSeed || requestId || seedText)
+          const rollRandom = createSeededRandom(hashSeed(effectiveSeed))
+          const isReplay = replayLive || (Array.isArray(replayFrames) && replayFrames.length > 0)
+          window.__diceTrace = isReplay
+            ? {
+                mode: 'replay',
+                requestId,
+                frames: Array.isArray(replayFrames) ? replayFrames.slice() : [],
+                index: 0,
+                lastFrame: null,
+              }
+            : {
+                mode: 'record',
+                requestId,
+                frames: [],
+                onFrame: (frame, index) => {
+                  window.parent.postMessage(
+                    {
+                      type: 'dice-box-d20-frame',
+                      requestId,
+                      frame,
+                      index,
+                    },
+                    window.location.origin,
+                  )
+                },
+              }
+          debugDice(requestId, 'd20:start', { forcedValue, rollSeed: effectiveSeed, replayFrames: isReplay ? replayFrames.length : 0 })
+          hideResultBadge()
+          debugDice(requestId, 'd20:get-box:start')
+          const box = await getBox()
+          debugDice(requestId, 'd20:get-box:done')
+          await randomizeThrow(box, rollRandom)
+          debugDice(requestId, 'd20:randomized')
+          const forced = forcedValue == null ? null : clampDie(forcedValue, 20)
+          let value = forced ?? null
+          const clipCache = readD20ClipCache(value)
+          debugDice(requestId, clipCache ? 'd20:clip-cache:hit' : 'd20:clip-cache:miss', {
+            value,
+            cacheUpdatedAt: clipCache?.updatedAt,
+          })
+          const notation = value == null ? { qty: 1, sides: 20 } : { qty: 1, sides: 20, forcedValue: value }
+          let resultPosted = false
+          const postResult = (reason) => {
+            if (resultPosted) return
+            resultPosted = true
+            activeD20RequestId = null
+            completedD20RequestIds.add(requestId)
+            if (completedD20RequestIds.size > 40) {
+              const [oldest] = completedD20RequestIds
+              completedD20RequestIds.delete(oldest)
+            }
+            const finalValue = clampDie(value ?? forcedValue, 20)
+            const traceFrames = Array.isArray(window.__diceTrace?.frames) ? window.__diceTrace.frames : []
+            showResultBadge([finalValue])
+            writeD20ClipCache(finalValue, { seed: effectiveSeed, reason, frames: traceFrames.length })
+            debugDice(requestId, 'd20:result:post', { value: finalValue, reason, frames: traceFrames.length })
+            window.parent.postMessage(
+              {
+                type: 'dice-box-d20-result',
+                requestId,
+                value: finalValue,
+                traceFrames,
+              },
+              window.location.origin,
+            )
+          }
+          const timeout = window.setTimeout(() => postResult('timeout'), 45000)
+          debugDice(requestId, 'd20:roll:start', { notation })
+          void box
+            .roll(notation, { newStartPoint: false })
+            .then((results) => {
+              window.clearTimeout(timeout)
+              const rolledValues = readDieValues(results)
+              value = forced ?? rolledValues[0] ?? value ?? 1
+              debugDice(requestId, 'd20:roll:done', { values: rolledValues })
+              window.setTimeout(() => postResult('complete'), 260)
+            })
+            .catch((error) => {
+              window.clearTimeout(timeout)
+              debugDice(requestId, 'd20:roll:error', { message: error instanceof Error ? error.message : String(error) })
+              postResult('error')
+            })
+        } catch (error) {
+          activeD20RequestId = null
+          completedD20RequestIds.add(requestId)
+          debugDice(requestId, 'd20:error', { message: error instanceof Error ? error.message : String(error) })
+          console.error('DiceBox iframe roll failed', error)
+          window.parent.postMessage(
+            {
+              type: 'dice-box-d20-result',
+              requestId,
+              value: forcedValue == null ? 1 + Math.floor(Math.random() * 20) : clampDie(forcedValue, 20),
+              fallback: true,
+            },
+            window.location.origin,
+          )
+        }
+      }
+
+      async function rollDice(requestId, qty, sides, forcedValues, replayFrames, replayLive = false) {
+        const safeQty = Math.max(1, Math.min(12, Math.round(Number(qty) || 1)))
+        const safeSides = Math.max(2, Math.min(100, Math.round(Number(sides) || 6)))
+        try {
+          debugDice(requestId, 'dice:start', { qty: safeQty, sides: safeSides, forcedValues })
+          const isReplay = replayLive || (Array.isArray(replayFrames) && replayFrames.length > 0)
+          window.__diceTrace = isReplay
+            ? {
+                mode: 'replay',
+                requestId,
+                frames: Array.isArray(replayFrames) ? replayFrames.slice() : [],
+                index: 0,
+                lastFrame: null,
+              }
+            : {
+                mode: 'record',
+                requestId,
+                frames: [],
+                onFrame: (frame, index) => {
+                  window.parent.postMessage(
+                    {
+                      type: 'dice-box-roll-frame',
+                      requestId,
+                      frame,
+                      index,
+                    },
+                    window.location.origin,
+                  )
+                },
+              }
+          hideResultBadge()
+          debugDice(requestId, 'dice:get-box:start')
+          const box = await getBox()
+          debugDice(requestId, 'dice:get-box:done')
+          await randomizeThrow(box)
+          debugDice(requestId, 'dice:randomized')
+          const forced = forcedList(forcedValues, safeQty, safeSides)
+          const notation = `${safeQty}d${safeSides}`
+          const postResult = (reason, rolledValues) => {
+            const values =
+              forced.length > 0
+                ? forced
+                : Array.isArray(rolledValues) && rolledValues.length > 0
+                  ? rolledValues.slice(0, safeQty).map((value) => clampDie(value, safeSides))
+                  : Array.from({ length: safeQty }, () => 1 + Math.floor(Math.random() * safeSides))
+            showResultBadge(values)
+            const traceFrames = Array.isArray(window.__diceTrace?.frames) ? window.__diceTrace.frames : []
+            debugDice(requestId, 'dice:result:post', { values, reason, rolledValues, frames: traceFrames.length })
+            window.parent.postMessage(
+              {
+                type: 'dice-box-roll-result',
+                requestId,
+                values,
+                traceFrames,
+              },
+              window.location.origin,
+            )
+          }
+          const rollNotation =
+            forced.length > 0
+              ? forced.map((forcedValue) => ({ qty: 1, sides: safeSides, forcedValue: clampDie(forcedValue, safeSides) }))
+              : notation
+          const timeout = window.setTimeout(() => postResult('timeout', []), 18000)
+          debugDice(requestId, 'dice:roll:start', { forced, notation: rollNotation })
+          void box
+            .roll(rollNotation, { newStartPoint: true })
+            .then((results) => {
+              window.clearTimeout(timeout)
+              const rolledValues = readDieValues(results)
+              debugDice(requestId, 'dice:roll:done', { values: rolledValues })
+              window.setTimeout(() => postResult('complete', rolledValues), 260)
+            })
+            .catch((error) => {
+              window.clearTimeout(timeout)
+              debugDice(requestId, 'dice:roll:error', { message: error instanceof Error ? error.message : String(error) })
+              postResult('error', [])
+            })
+        } catch (error) {
+          debugDice(requestId, 'dice:error', { message: error instanceof Error ? error.message : String(error) })
+          console.error('DiceBox iframe roll failed', error)
+          window.parent.postMessage(
+            {
+              type: 'dice-box-roll-result',
+              requestId,
+              values: forcedList(forcedValues, safeQty, safeSides).length > 0
+                ? forcedList(forcedValues, safeQty, safeSides)
+                : Array.from({ length: safeQty }, () => 1 + Math.floor(Math.random() * safeSides)),
+              fallback: true,
+            },
+            window.location.origin,
+          )
+        }
+      }
+
+      window.addEventListener('message', (event) => {
+        if (event.origin !== window.location.origin) return
+        if (event.data?.type === 'roll-d20') {
+          void rollD20(event.data.requestId, event.data.value, event.data.seed, event.data.traceFrames, event.data.replayLive)
+          return
+        }
+        if (event.data?.type === 'dice-trace-frame') {
+          const trace = window.__diceTrace
+          if (trace?.mode === 'replay' && trace.requestId === event.data.requestId && Array.isArray(event.data.frame)) {
+            trace.frames.push(event.data.frame)
+            if (trace.frames.length > 900) {
+              const overflow = trace.frames.length - 900
+              trace.frames.splice(0, overflow)
+              trace.index = Math.max(0, (trace.index || 0) - overflow)
+            }
+          }
+          return
+        }
+        if (event.data?.type === 'roll-dice') {
+          void rollDice(event.data.requestId, event.data.qty, event.data.sides, event.data.values, event.data.traceFrames, event.data.replayLive)
+        }
+      })
+
+      void getBox().finally(() => {
+        debugDice('init', 'ready:post')
+        window.parent.postMessage({ type: 'dice-box-ready' }, window.location.origin)
+        if (autoroll === 'd20') {
+          window.setTimeout(() => void rollD20(`autoroll-${seedText}`, autorollValue, seedText), 250)
+        } else if (autoroll === 'dice') {
+          window.setTimeout(
+            () => void rollDice(`autoroll-${seedText}`, params.get('qty') ?? 1, params.get('sides') ?? 6, [autorollValue]),
+            250,
+          )
+        }
+      })
+    </script>
+  </body>
+</html>
