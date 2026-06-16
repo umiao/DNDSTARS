@@ -11,10 +11,12 @@
     "serve:player": "node scripts/static-server.mjs --host 127.0.0.1 --port 5174 --root dist",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
     "@3d-dice/dice-box": "^1.1.4",
+    "@3d-dice/dice-box-threejs": "^0.0.12",
     "@tailwindcss/vite": "^4.3.0",
     "cannon-es": "^0.20.0",
     "konva": "^10.3.0",
@@ -42,6 +44,7 @@
     "sharp": "^0.34.5",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.12"
+    "vite": "^8.0.12",
+    "vitest": "^4.1.9"
   }
 }

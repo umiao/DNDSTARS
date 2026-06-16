@@ -1,0 +1,108 @@
+<!doctype html>
+<!--
+  TEMPORARY — SPIKE harness (T-P2-395). Removal owned by T-P2-400.
+  Standalone (no App.tsx import graph) so it loads even while the app's
+  pre-existing mojibake files (enemyPool/enemyStatBlocks/traitRegistry) 500.
+  Mirrors the existing public/dice-import-probe.html pattern.
+  Open at /dice-threejs-spike.html. window.runSpike() drives the AC matrix.
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>dice-box-threejs spike (T-P2-395)</title>
+    <style>
+      body { margin: 0; font: 14px system-ui, sans-serif; background: #0b1a3e; color: #e2e8f0; }
+      #bar { padding: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      button { background: #7c3aed; color: #fff; border: 0; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+      button:disabled { opacity: .4; cursor: not-allowed; }
+      #dice { width: 100%; height: 52vh; }
+      table { width: 100%; border-collapse: collapse; font-family: ui-monospace, monospace; }
+      th, td { padding: 4px 8px; text-align: left; border-top: 1px solid #1e293b; }
+      .pass { color: #34d399; } .fail { color: #f87171; } .na { color: #94a3b8; }
+      #status { color: #fbbf24; }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <strong>dice-box-threejs @ 翻面 spike</strong>
+      <button id="run" disabled>运行全部 AC</button>
+      <span id="status">初始化引擎…</span>
+    </div>
+    <div id="dice"></div>
+    <table>
+      <thead><tr><th>#</th><th>notation</th><th>expected</th><th>returned</th><th>total</th><th>target==value</th><th>note</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <script type="module">
+      // Static public/ HTML is NOT Vite-transformed, so a bare specifier won't
+      // resolve. Import the self-contained dist by absolute path (same pattern
+      // as public/dice-box-frame.html importing /vendor/...). The dist bundles
+      // three + cannon-es, so no further imports are needed.
+      import DiceBox from '/node_modules/@3d-dice/dice-box-threejs/dist/dice-box-threejs.es.js'
+
+      const ACCENT = '#7c3aed'
+      const statusEl = document.getElementById('status')
+      const rowsEl = document.getElementById('rows')
+      let seq = 0
+      window.__spikeResults = []
+
+      const parseExpected = (n) => {
+        const at = n.split('@')[1]
+        if (!at) return null
+        const m = at.match(/-?\d+/g)
+        return m ? m.map(Number) : null
+      }
+      const flatten = (r) => r.sets.flatMap((s) => s.rolls.filter((d) => d.reason !== 'remove').map((d) => d.value))
+      const msEqual = (a, b) => a.length === b.length && [...a].sort((x, y) => x - y).every((v, i) => v === [...b].sort((x, y) => x - y)[i])
+
+      function addRow(row) {
+        const tr = document.createElement('tr')
+        const cls = row.match === 'pass' ? 'pass' : row.match === 'fail' ? 'fail' : 'na'
+        tr.innerHTML = `<td>${row.id}</td><td>${row.notation}</td><td>${row.expected}</td><td>${row.returned}</td><td>${row.total}</td><td class="${cls}">${row.match}</td><td>${row.note || ''}</td>`
+        rowsEl.prepend(tr)
+        window.__spikeResults.unshift(row)
+      }
+
+      const box = new DiceBox('#dice', {
+        assetPath: '/assets/dice-threejs/',
+        theme_customColorset: { name: 'arcane-purple', foreground: '#f5f3ff', background: ACCENT, outline: '#3b0764', texture: 'none', material: 'glass' },
+        theme_material: 'glass', baseScale: 100, gravity_multiplier: 400, light_intensity: 0.9, shadows: true, sounds: false,
+      })
+
+      async function rollOnce(notation, note) {
+        const result = await box.roll(notation)
+        const returned = flatten(result)
+        const expected = parseExpected(notation)
+        const match = expected ? (msEqual(expected, returned) ? 'pass' : 'fail') : 'na'
+        addRow({ id: ++seq, notation, expected: expected ? expected.join(',') : '(random)', returned: returned.join(','), total: result.total, match, note })
+        return result
+      }
+
+      window.runSpike = async () => {
+        await rollOnce('1d20@20', 'AC1')
+        for (const t of [1, 5, 7, 11, 13, 17, 19, 20, 3, 9]) await rollOnce(`1d20@${t}`, 'AC2 forced')
+        await rollOnce('6d6@4,4,4,4,4,4', 'AC3 all=4')
+        await rollOnce('1d10@10', 'AC4a face0->10')
+        await rollOnce('1d100@57', 'AC4b lone-d100 limit')
+        await rollOnce('1d100+1d10@50,7', 'AC4c percentile pair -> 57')
+        const rnd = []
+        for (let i = 0; i < 10; i++) rnd.push(...flatten(await rollOnce('1d20', 'AC5 random')))
+        const distinct = new Set(rnd).size
+        addRow({ id: ++seq, notation: '— AC5 summary —', expected: '(random)', returned: `distinct=${distinct}/10`, total: 0, match: distinct > 1 ? 'pass' : 'fail', note: 'pass=not all identical' })
+        return window.__spikeResults
+      }
+
+      try {
+        await box.initialize()
+        statusEl.textContent = '就绪'
+        const btn = document.getElementById('run')
+        btn.disabled = false
+        btn.onclick = () => { btn.disabled = true; window.runSpike().finally(() => (btn.disabled = false)) }
+        window.__spikeReady = true
+      } catch (e) {
+        statusEl.textContent = '初始化失败: ' + (e && e.message ? e.message : e)
+        window.__spikeError = String(e)
+      }
+    </script>
+  </body>
+</html>

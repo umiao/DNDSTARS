@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dice Box (threejs)</title>
+    <style>
+      html,
+      body,
+      #dice {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: transparent !important;
+        background-color: transparent !important;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        color-scheme: normal;
+      }
+
+      #dice {
+        position: relative;
+      }
+
+      canvas {
+        display: block;
+        width: 100% !important;
+        height: 100% !important;
+        background: transparent !important;
+        background-color: transparent !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="dice"></div>
+    <!--
+      T-P2-397 — iframe dice host, re-platformed from Babylon @3d-dice/dice-box to
+      @3d-dice/dice-box-threejs via the T-P2-396 wrapper (src/lib/diceEngine.ts).
+
+      Correctness fix: the old path used Babylon `forcedValue`, which rewrote only
+      the REPORTED number, not the visual face (face != value). This path forces
+      with `@` notation (buildNotation → "NdS@v1,v2"), so the engine relabels the
+      physical up-face to the target — reported value == visible face. There is no
+      post-physics value reassignment here (AC2).
+
+      AC0 (probe result, see PROGRESS): per-frame trace/streaming does NOT survive
+      on threejs — the legacy world.onscreen.trace.js was a bespoke instrumented
+      Babylon world feeding __diceTrace.onFrame(frame, index); the threejs engine
+      exposes only a terminal onRollComplete (no per-tick transform hook). So this
+      task does NOT rebuild multi-end frame-by-frame animation. Multi-end is
+      intentionally interrupted between T-P2-397 → T-P2-398 and rebuilt by the
+      T-P2-398 result-broadcast (each end self-renders @values). "Backward compat"
+      here is the SINGLE-END postMessage path only.
+
+      Inert-but-kept (removed in T-P2-401): the `seed` / `scale` URL params, the
+      `traceFrames: []` field in results, and the `dice-trace-frame` listener.
+    -->
+    <script type="module">
+      import { createDiceBox } from './src/lib/diceEngine'
+      import { buildNotation } from './src/lib/diceNotation'
+
+      const params = new URLSearchParams(window.location.search)
+      const ORIGIN = window.location.origin
+
+      // Inert (Babylon-era): `seed` (determinism) and `scale` (Babylon baseScale
+      // units, meaningless to threejs). Accepted so the React side needs no change
+      // (AC4); cleaned up in T-P2-401. threejs uses the wrapper's validated scale.
+      void params.get('seed')
+      void params.get('scale')
+
+      let boxPromise = null
+      // requestId-level exactly-once: even if a request is posted twice (promise +
+      // event double-fire upstream), only one *-result leaves this frame (AC6).
+      const completedRequestIds = new Set()
+
+      function rememberCompleted(requestId) {
+        completedRequestIds.add(requestId)
+        if (completedRequestIds.size > 40) {
+          const [oldest] = completedRequestIds
+          completedRequestIds.delete(oldest)
+        }
+      }
+
+      function getBox() {
+        if (!boxPromise) {
+          // Single shared physics world; the wrapper serializes rolls (a second
+          // roll while one is in flight rejects rather than corrupting delivery).
+          boxPromise = createDiceBox('#dice')
+        }
+        return boxPromise
+      }
+
+      function clampQty(qty) {
+        return Math.max(1, Math.min(12, Math.round(Number(qty) || 1)))
+      }
+
+      function clampSides(sides) {
+        return Math.max(2, Math.min(100, Math.round(Number(sides) || 6)))
+      }
+
+      // Fallback faces when the engine stalls or errors — random, single-end only.
+      // Randomness lives here (impure), never in the tested notation module.
+      function fallbackValues(qty, sides) {
+        const q = clampQty(qty)
+        const s = clampSides(sides)
+        return Array.from({ length: q }, () => 1 + Math.floor(Math.random() * s))
+      }
+
+      function postResult(kind, requestId, values, fallback) {
+        rememberCompleted(requestId)
+        const payload =
+          kind === 'd20'
+            ? {
+                type: 'dice-box-d20-result',
+                requestId,
+                value: values[0],
+                traceFrames: [], // inert — removed in T-P2-401
+                ...(fallback ? { fallback: true } : {}),
+              }
+            : {
+                type: 'dice-box-roll-result',
+                requestId,
+                values,
+                traceFrames: [], // inert — removed in T-P2-401
+                ...(fallback ? { fallback: true } : {}),
+              }
+        window.parent.postMessage(payload, ORIGIN)
+      }
+
+      async function handleRoll(kind, requestId, qty, sides, values) {
+        if (requestId == null) return
+        if (completedRequestIds.has(requestId)) return // dedup repeat requests
+
+        let settled = false
+        const deliver = (vals, fallback) => {
+          if (settled) return
+          settled = true
+          window.clearTimeout(timer)
+          postResult(kind, requestId, vals, fallback)
+        }
+
+        // Single-end timeout fallback (kept for AC4): always hand back a value.
+        const timer = window.setTimeout(
+          () => deliver(fallbackValues(qty, sides), true),
+          kind === 'd20' ? 45000 : 18000,
+        )
+
+        try {
+          const box = await getBox()
+          const notation = buildNotation(qty, sides, values)
+          // box.roll resolves exactly once (wrapper dedups the engine's triple
+          // emit); outcome.values are the engine's relabeled up-faces == reported.
+          const outcome = await box.roll(notation)
+          const vals =
+            Array.isArray(outcome.values) && outcome.values.length > 0
+              ? outcome.values
+              : fallbackValues(qty, sides)
+          deliver(vals, false)
+        } catch (error) {
+          console.error('[dice-box-frame] roll failed', error)
+          deliver(fallbackValues(qty, sides), true)
+        }
+      }
+
+      window.addEventListener('message', (event) => {
+        if (event.origin !== ORIGIN) return
+        const data = event.data
+        if (data?.type === 'roll-d20') {
+          // value present → forced (1d20@v); absent → random 1d20.
+          void handleRoll('d20', data.requestId, 1, 20, data.value == null ? [] : [data.value])
+          return
+        }
+        if (data?.type === 'roll-dice') {
+          void handleRoll('dice', data.requestId, data.qty, data.sides, data.values)
+          return
+        }
+        if (data?.type === 'dice-trace-frame') {
+          // Inert: multi-end replay-frame ingestion is gone (AC0). Symbol kept so
+          // the React side needs no change; the listener is removed in T-P2-401.
+          return
+        }
+      })
+
+      // Warm the engine, then announce readiness so overlays send their roll.
+      void getBox()
+        .catch((error) => console.error('[dice-box-frame] init failed', error))
+        .finally(() => {
+          window.parent.postMessage({ type: 'dice-box-ready' }, ORIGIN)
+        })
+    </script>
+  </body>
+</html>
