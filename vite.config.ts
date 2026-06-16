@@ -11,4 +11,17 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  build: {
+    // Multi-page (T-P2-397): the dice iframe is its own HTML entry so Vite
+    // bundles the threejs engine + the diceEngine/diceNotation modules into it.
+    // It was previously a verbatim public/ file that could not import app code.
+    // Both dev (Vite serves root *.html at their path) and the static dist serve
+    // preserve the /dice-box-frame.html URL, so the React side is unchanged (AC4).
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        diceFrame: path.resolve(__dirname, 'dice-box-frame.html'),
+      },
+    },
+  },
 })
