@@ -31,7 +31,7 @@ export default function App() {
     <div className="flex h-screen w-screen overflow-hidden">
       <iframe
         title="D20 dice preloader"
-        src="/dice-box-frame.html?scale=6.4&seed=d20-preload&badge=0"
+        src="/dice-box-frame.html?badge=0"
         className="dice-box-preload-frame"
         sandbox="allow-scripts allow-same-origin"
         aria-hidden="true"
