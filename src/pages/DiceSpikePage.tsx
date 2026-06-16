@@ -1,12 +1,15 @@
 // ============================================================================
 // TEMPORARY — SPIKE PAGE (T-P2-395). Removal owned by T-P2-400 (cleanup task).
 // This file + its /dice-spike route are the ONLY temporary artifacts of the
-// spike. The @3d-dice/dice-box-threejs dependency and public/assets/dice-threejs/
-// are PERMANENT (used by T-P2-396..398) and MUST NOT be deleted by cleanup.
+// spike. The @3d-dice/dice-box-threejs dependency, public/assets/dice-threejs/,
+// and src/lib/diceEngine.ts are PERMANENT (used by T-P2-396..398) and MUST NOT
+// be deleted by cleanup.
 //
-// Purpose: de-risk the migration from @3d-dice/dice-box (Babylon, forcedValue →
-// face≠number bug) to @3d-dice/dice-box-threejs (@ predetermined rolling, which
-// physically relabels the up-face so visible face == reported value).
+// As of T-P2-396 this page no longer talks to the engine directly — it drives
+// the createDiceBox() wrapper in src/lib/diceEngine.ts. The "onComplete fired"
+// counter below makes the wrapper's exactly-once guarantee (engine emits each
+// result via callback + event + promise) observable: it must equal the number
+// of rolls issued.
 //
 // Manual smoke matrix (operator runs each button, eyeballs the canvas):
 //   AC1  1d20@20            → visible face 20, callback value 20
@@ -19,9 +22,9 @@
 //   AC5  10× random 1d20    → callback==visible face; values not all identical
 // ============================================================================
 import { useCallback, useEffect, useRef, useState } from 'react'
-import DiceBox, { type DiceRollResults } from '@3d-dice/dice-box-threejs'
+import { createDiceBox, DICE_ACCENT, type DiceEngineBox, type DiceOutcome } from '../lib/diceEngine'
 
-const ACCENT = '#7c3aed' // parity with existing Babylon themeColor
+const ACCENT = DICE_ACCENT // AC3: single source of truth, no local redefinition
 
 type LogRow = {
   id: number
@@ -41,10 +44,6 @@ function parseExpected(notation: string): number[] | null {
   return nums ? nums.map((n) => parseInt(n, 10)) : null
 }
 
-function flattenValues(r: DiceRollResults): number[] {
-  return r.sets.flatMap((s) => s.rolls.filter((d) => d.reason !== 'remove').map((d) => d.value))
-}
-
 // Order-insensitive multiset equality.
 function multisetEqual(a: number[], b: number[]): boolean {
   if (a.length !== b.length) return false
@@ -55,38 +54,34 @@ function multisetEqual(a: number[], b: number[]): boolean {
 
 export default function DiceSpikePage() {
   const containerRef = useRef<HTMLDivElement>(null)
-  const boxRef = useRef<DiceBox | null>(null)
+  const boxRef = useRef<DiceEngineBox | null>(null)
   const seqRef = useRef(0)
   const [ready, setReady] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [rows, setRows] = useState<LogRow[]>([])
+  // AC2 observability: rolls issued vs. onComplete callbacks fired (must match).
+  const [rollsIssued, setRollsIssued] = useState(0)
+  const [completesFired, setCompletesFired] = useState(0)
 
   useEffect(() => {
     let disposed = false
+    let created: DiceEngineBox | null = null
     const el = containerRef.current
     if (!el) return
     void (async () => {
       try {
-        const box = new DiceBox('#dice-spike-canvas', {
-          assetPath: '/assets/dice-threejs/', // permanent location; texture:'none' fetches nothing
-          theme_customColorset: {
-            name: 'arcane-purple',
-            foreground: '#f5f3ff',
-            background: ACCENT,
-            outline: '#3b0764',
-            texture: 'none',
-            material: 'glass',
-          },
-          theme_material: 'glass',
-          baseScale: 100,
-          gravity_multiplier: 400,
-          light_intensity: 0.9,
-          shadows: true,
-          sounds: false,
+        const box = await createDiceBox('#dice-spike-canvas', {
+          scale: 100,
+          // Wrapper guarantees this fires exactly once per roll despite the
+          // engine's callback+event+promise triple-emit.
+          onComplete: () => setCompletesFired((c) => c + 1),
         })
-        await box.initialize?.()
-        if (disposed) return
+        if (disposed) {
+          box.destroy()
+          return
+        }
+        created = box
         boxRef.current = box
         setReady(true)
       } catch (e) {
@@ -95,6 +90,8 @@ export default function DiceSpikePage() {
     })()
     return () => {
       disposed = true
+      created?.destroy()
+      boxRef.current = null
     }
   }, [])
 
@@ -104,9 +101,10 @@ export default function DiceSpikePage() {
     const box = boxRef.current
     if (!box) return
 
-    const rollOnce = async (notation: string, note?: string): Promise<DiceRollResults> => {
+    const rollOnce = async (notation: string, note?: string): Promise<DiceOutcome> => {
+      setRollsIssued((n) => n + 1)
       const result = await box.roll(notation)
-      const returned = flattenValues(result)
+      const returned = result.values
       const expected = parseExpected(notation)
       let match: LogRow['match'] = 'n/a'
       if (expected) match = multisetEqual(expected, returned) ? 'pass' : 'fail'
@@ -149,7 +147,7 @@ export default function DiceSpikePage() {
         const vals: number[] = []
         for (let i = 0; i < 10; i++) {
           const r = await rollOnce('1d20', 'AC5: true random')
-          vals.push(...flattenValues(r))
+          vals.push(...r.values)
         }
         const distinct = new Set(vals).size
         seqRef.current += 1
@@ -186,9 +184,16 @@ export default function DiceSpikePage() {
   return (
     <div className="relative h-full w-full">
       <div className="mb-4">
-        <h1 className="text-xl font-bold text-arcane-200">Dice Engine Spike — dice-box-threejs (TEMPORARY)</h1>
+        <h1 className="text-xl font-bold text-arcane-200">Dice Engine Spike — diceEngine wrapper (TEMPORARY)</h1>
         <p className="text-sm text-slate-400">
-          T-P2-395 · 验证 <code>@</code> 翻面重贴(可见面 == 上报值)· accent {ACCENT} · 移除归 T-P2-400
+          T-P2-396 · 走 <code>src/lib/diceEngine.ts</code> 封装 · <code>@</code> 翻面重贴(可见面 == 上报值)· accent {ACCENT} · 移除归 T-P2-400
+        </p>
+        <p className="text-sm text-slate-400">
+          rolls issued = <span className="font-mono text-arcane-200">{rollsIssued}</span> · onComplete fired ={' '}
+          <span className="font-mono text-arcane-200">{completesFired}</span>{' '}
+          <span style={{ color: rollsIssued === completesFired ? '#34d399' : '#f87171' }}>
+            ({rollsIssued === completesFired ? '相等 ⇒ 每次恰一次' : '不相等 ⇒ 去重失败'})
+          </span>
         </p>
         {!ready && !error && <p className="text-amber-400">初始化引擎中…</p>}
         {error && <p className="text-red-400">错误: {error}</p>}
