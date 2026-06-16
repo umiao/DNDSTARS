@@ -48,29 +48,21 @@
       post-physics value reassignment here (AC2).
 
       AC0 (probe result, see PROGRESS): per-frame trace/streaming does NOT survive
-      on threejs — the legacy world.onscreen.trace.js was a bespoke instrumented
-      Babylon world feeding __diceTrace.onFrame(frame, index); the threejs engine
-      exposes only a terminal onRollComplete (no per-tick transform hook). So this
-      task does NOT rebuild multi-end frame-by-frame animation. Multi-end is
-      intentionally interrupted between T-P2-397 → T-P2-398 and rebuilt by the
-      T-P2-398 result-broadcast (each end self-renders @values). "Backward compat"
-      here is the SINGLE-END postMessage path only.
+      on threejs — the legacy instrumented Babylon world emitted per-tick frames,
+      whereas the threejs engine exposes only a terminal onRollComplete (no
+      per-tick transform hook). So multi-end frame-by-frame animation is not
+      rebuilt; it is replaced by the T-P2-398 result-broadcast, where each end
+      self-renders @values. This host is the SINGLE-END postMessage path only.
 
-      Inert-but-kept (removed in T-P2-401): the `seed` / `scale` URL params, the
-      `traceFrames: []` field in results, and the `dice-trace-frame` listener.
+      T-P2-401 removed the inert Babylon-era residue (the determinism/scale URL
+      params, the empty per-tick result field, and the per-tick listener). threejs
+      self-renders the broadcast @values; the protocol carries no determinism field.
     -->
     <script type="module">
       import { createDiceBox } from './src/lib/diceEngine'
       import { buildNotation } from './src/lib/diceNotation'
 
-      const params = new URLSearchParams(window.location.search)
       const ORIGIN = window.location.origin
-
-      // Inert (Babylon-era): `seed` (determinism) and `scale` (Babylon baseScale
-      // units, meaningless to threejs). Accepted so the React side needs no change
-      // (AC4); cleaned up in T-P2-401. threejs uses the wrapper's validated scale.
-      void params.get('seed')
-      void params.get('scale')
 
       let boxPromise = null
       // requestId-level exactly-once: even if a request is posted twice (promise +
@@ -118,14 +110,12 @@
                 type: 'dice-box-d20-result',
                 requestId,
                 value: values[0],
-                traceFrames: [], // inert — removed in T-P2-401
                 ...(fallback ? { fallback: true } : {}),
               }
             : {
                 type: 'dice-box-roll-result',
                 requestId,
                 values,
-                traceFrames: [], // inert — removed in T-P2-401
                 ...(fallback ? { fallback: true } : {}),
               }
         window.parent.postMessage(payload, ORIGIN)
@@ -176,11 +166,6 @@
         }
         if (data?.type === 'roll-dice') {
           void handleRoll('dice', data.requestId, data.qty, data.sides, data.values)
-          return
-        }
-        if (data?.type === 'dice-trace-frame') {
-          // Inert: multi-end replay-frame ingestion is gone (AC0). Symbol kept so
-          // the React side needs no change; the listener is removed in T-P2-401.
           return
         }
       })

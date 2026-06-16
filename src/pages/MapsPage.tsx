@@ -184,9 +184,6 @@ interface SharedDiceState {
   count?: number
   sides?: number
   values?: number[]
-  diceSeed?: string
-  traceFrames?: number[][]
-  animationSeed?: string
   flyIndex?: number
   label?: string
   targetName?: string
@@ -200,56 +197,10 @@ interface SharedDiceEventsState {
   updatedAt: number
 }
 
-type SharedDiceStreamEvent =
-  | {
-      eventId: string
-      type: 'start'
-      mapId: string
-      sourceMode: Mode
-      requestId: string
-      kind: 'd20' | 'dice'
-      count?: number
-      sides?: number
-      values?: number[]
-      diceSeed?: string
-      flyIndex?: number
-      label: string
-      targetName: string
-      updatedAt: number
-    }
-  | {
-      eventId: string
-      type: 'frame'
-      mapId: string
-      sourceMode: Mode
-      requestId: string
-      kind: 'd20' | 'dice'
-      frame: number[]
-      index: number
-      updatedAt: number
-    }
-  | {
-      eventId: string
-      type: 'complete'
-      mapId: string
-      sourceMode: Mode
-      requestId: string
-      kind: 'd20' | 'dice'
-      value: number
-      values?: number[]
-      updatedAt: number
-    }
-
-type SharedDiceStreamPayload =
-  | Omit<Extract<SharedDiceStreamEvent, { type: 'start' }>, 'eventId' | 'mapId' | 'sourceMode' | 'updatedAt'>
-  | Omit<Extract<SharedDiceStreamEvent, { type: 'frame' }>, 'eventId' | 'mapId' | 'sourceMode' | 'updatedAt'>
-  | Omit<Extract<SharedDiceStreamEvent, { type: 'complete' }>, 'eventId' | 'mapId' | 'sourceMode' | 'updatedAt'>
-
-// T-P2-398 (398-A, strangler): result-broadcast path. DM emits ONE seedless
-// roll-request carrying the already-decided values; each end self-renders the
-// @values face independently. Intentionally NO seed/diceSeed field (AC2) — the
-// terminal face is carried by `values`, not reproduced from a seed. Lives on a
-// dedicated channel so it never touches the old dice-stream frame path (AC4).
+// T-P2-398 (398-A): result-broadcast path. DM emits ONE roll-request carrying
+// the already-decided values; each end self-renders the @values face
+// independently. The terminal face is carried by `values`, never reproduced
+// from a determinism field — the payload has none (AC2/AC3).
 interface SharedRollRequestEvent {
   eventId: string
   mapId: string
@@ -435,8 +386,7 @@ export default function MapsPage() {
     label: string
     targetName: string
     value?: number
-    diceSeed?: string
-    animationSeed?: string
+    requestKey?: string
     flyIndex?: number
     resolve: (value: number) => void
   } | null>(null)
@@ -448,29 +398,13 @@ export default function MapsPage() {
     label: string
     targetName: string
     values: number[]
-    animationSeed?: string
+    requestKey?: string
     flyIndex?: number
     resolve: (values: number[]) => void
   } | null>(null)
-  const [sharedDicePreview, setSharedDicePreview] = useState<{
-    id: string
-    kind: 'd20' | 'dice'
-    count: number
-    sides: number
-    values?: number[]
-    diceSeed?: string
-    traceFrames?: number[][]
-    replayLive?: boolean
-    liveFrame?: number[]
-    liveFrameSeq?: number
-    animationSeed?: string
-    flyIndex?: number
-    label: string
-    targetName: string
-  } | null>(null)
-  // T-P2-398 (398-A): player-side self-render driven by the new roll-request
-  // broadcast. Deliberately separate from sharedDicePreview so the old
-  // dice-stream path (start/frame/complete) cannot clear or race it.
+  // T-P2-398 (398-A): player-side self-render driven by the roll-request
+  // broadcast — the sole multi-end animation path (T-P2-401 removed the dead
+  // dice-stream start/frame/complete replay path it was once separated from).
   const [rollRequestPreview, setRollRequestPreview] = useState<{
     id: string
     kind: 'd20' | 'dice'
@@ -481,12 +415,16 @@ export default function MapsPage() {
     targetName: string
   } | null>(null)
 
+  // T-P2-401 (AC2): local d20 roller fallback — if the engine never becomes
+  // ready / fails init, resolve with the already-decided face after 4500ms so
+  // the HUD number shows and nothing hangs. Deterministically triggerable by
+  // killing the iframe engine.
   useEffect(() => {
     if (!diceBoxD20) return
     const request = diceBoxD20
     const timer = window.setTimeout(() => {
       setDiceBoxD20((current) => (current?.id === request.id ? null : current))
-      request.resolve(request.value ?? seededDieValue(`${request.diceSeed ?? request.id}:timeout`, 20))
+      request.resolve(request.value ?? seededDieValue(`${request.requestKey ?? request.id}:timeout`, 20))
     }, 4500)
     return () => window.clearTimeout(timer)
   }, [diceBoxD20])
@@ -501,23 +439,14 @@ export default function MapsPage() {
     return () => window.clearTimeout(timer)
   }, [diceBoxRoll])
 
-  useEffect(() => {
-    if (!sharedDicePreview) return
-    const id = sharedDicePreview.id
-    const duration = sharedDicePreview.kind === 'd20' ? 3500 : 12000
-    const timer = window.setTimeout(() => {
-      setSharedDicePreview((current) => (current?.id === id ? null : current))
-    }, duration)
-    return () => window.clearTimeout(timer)
-  }, [sharedDicePreview])
-
-  // T-P2-398 (398-A): safety auto-clear for the roll-request self-render, in
-  // case onComplete never fires (iframe stall). Longer than the overlay's own
-  // min-visible window.
+  // T-P2-398 (398-A) + T-P2-401 (AC2): safety auto-clear for the player-side
+  // roll-request self-render. If the player engine fails/stalls and onComplete
+  // never fires, clear the stuck animation so only the authoritative HUD number
+  // remains. d20 bounded to the 4500ms AC2 fallback threshold.
   useEffect(() => {
     if (!rollRequestPreview) return
     const id = rollRequestPreview.id
-    const duration = rollRequestPreview.kind === 'd20' ? 6000 : 16000
+    const duration = rollRequestPreview.kind === 'd20' ? 4500 : 16000
     const timer = window.setTimeout(() => {
       setRollRequestPreview((current) => (current?.id === id ? null : current))
     }, duration)
@@ -545,28 +474,9 @@ export default function MapsPage() {
   } | null>(null)
   const suppressedDodgePromptIdsRef = useRef(new Set<string>())
   const seenSharedDiceIdsRef = useRef(new Set<string>())
-  const seenDiceStreamEventIdsRef = useRef(new Set<string>())
   // T-P2-398 (398-A): dedup roll-request by requestId (AC3) — same requestId
   // arriving twice (SSE fan-out to multiple local endpoints) renders once.
   const seenRollRequestIdsRef = useRef(new Set<string>())
-  const lastPublishedDiceFrameRef = useRef(new Map<string, number>())
-  const pendingDiceStreamsRef = useRef(
-    new Map<
-      string,
-      {
-        diceSeed?: string
-        flyIndex?: number
-        kind: 'd20' | 'dice'
-        count: number
-        sides: number
-        values?: number[]
-        label: string
-        targetName: string
-        firstFrame?: number[]
-        firstFrameSeq?: number
-      }
-    >(),
-  )
   const seenSharedLogIdsRef = useRef(new Set<number>())
 
   const hashDiceSeed = (text: string): number => {
@@ -657,21 +567,6 @@ export default function MapsPage() {
     })()
   }
 
-  const publishDiceStream = (event: SharedDiceStreamPayload) => {
-    if (!activeMap || !mode) return
-    const requestId = 'requestId' in event ? event.requestId : `${Date.now()}`
-    const index = 'index' in event ? event.index : 0
-    const eventId = `${requestId}:${event.type}:${index}:${Date.now()}:${Math.random().toString(36).slice(2)}`
-    const targetMode = mode === 'dm' ? 'player' : 'dm'
-    void publishSharedEvent<SharedDiceStreamEvent>(`dice-stream-${mode}-to-${targetMode}`, {
-      ...event,
-      eventId,
-      mapId: activeMap.id,
-      sourceMode: mode,
-      updatedAt: Date.now(),
-    } as SharedDiceStreamEvent)
-  }
-
   // T-P2-398 (398-A): broadcast the decided result once. One logical event per
   // throw (AC2); sharedApi fans it out to each local endpoint as the SSE
   // dual-send (the same eventId, deduped downstream by requestId).
@@ -691,27 +586,16 @@ export default function MapsPage() {
   const rollDiceBoxD20 = (label: string, targetName: string): Promise<number> => {
     const id = d20RequestCounterRef.current + 1
     d20RequestCounterRef.current = id
-    const diceSeed = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:d20:${Date.now()}:${id}:${label}:${targetName}`
-    const flyIndex = seededDieValue(`${diceSeed}:fly`, 8) - 1
+    const requestKey = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:d20:${Date.now()}:${id}:${label}:${targetName}`
+    const flyIndex = seededDieValue(`${requestKey}:fly`, 8) - 1
     // T-P2-398 (398-A): decide the face up front so both ends @-relabel to the
     // same value. RNG moved from the iframe physics into JS — same uniform
     // distribution, now broadcastable.
     const value = 1 + Math.floor(Math.random() * 20)
     const rollRequestId = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:rr-d20:${Date.now()}:${id}`
-    publishDiceStream({
-      type: 'start',
-      requestId: diceSeed,
-      kind: 'd20',
-      count: 1,
-      sides: 20,
-      diceSeed,
-      flyIndex,
-      label,
-      targetName,
-    })
     publishRollRequest({ requestId: rollRequestId, kind: 'd20', count: 1, sides: 20, values: [value], label, targetName })
     return new Promise((resolve) => {
-      setDiceBoxD20({ id, label, targetName, value, diceSeed, animationSeed: diceSeed, flyIndex, resolve })
+      setDiceBoxD20({ id, label, targetName, value, requestKey, flyIndex, resolve })
     })
   }
 
@@ -725,26 +609,14 @@ export default function MapsPage() {
     diceBoxRollRequestCounterRef.current = id
     const safeCount = Math.max(1, Math.min(12, Math.round(count)))
     const safeSides = Math.max(2, Math.min(100, Math.round(sides)))
-    const diceSeed = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:dice:${Date.now()}:${id}:${safeCount}d${safeSides}:${label}:${targetName}`
-    const flyIndex = seededDieValue(`${diceSeed}:fly`, 8) - 1
-    const animationSeed = diceSeed
+    const requestKey = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:dice:${Date.now()}:${id}:${safeCount}d${safeSides}:${label}:${targetName}`
+    const flyIndex = seededDieValue(`${requestKey}:fly`, 8) - 1
     // T-P2-398 (398-A): decide faces up front (see rollDiceBoxD20) and broadcast.
     const values = Array.from({ length: safeCount }, () => 1 + Math.floor(Math.random() * safeSides))
     const rollRequestId = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:rr-dice:${Date.now()}:${id}`
-    publishDiceStream({
-      type: 'start',
-      requestId: animationSeed,
-      kind: 'dice',
-      count: safeCount,
-      sides: safeSides,
-      diceSeed,
-      flyIndex,
-      label,
-      targetName,
-    })
     publishRollRequest({ requestId: rollRequestId, kind: 'dice', count: safeCount, sides: safeSides, values, label, targetName })
     return new Promise((resolve) => {
-      setDiceBoxRoll({ id, count: safeCount, sides: safeSides, label, targetName, values, animationSeed, flyIndex, resolve })
+      setDiceBoxRoll({ id, count: safeCount, sides: safeSides, label, targetName, values, requestKey, flyIndex, resolve })
     })
   }
 
@@ -925,94 +797,6 @@ export default function MapsPage() {
       window.clearInterval(timer)
     }
   }, [activeMap?.id])
-
-  useEffect(() => {
-    if (!activeMap || !mode) return
-    const sourceMode = mode === 'dm' ? 'player' : 'dm'
-    const unsubscribe = subscribeSharedEvent<SharedDiceStreamEvent>(`dice-stream-${sourceMode}-to-${mode}`, (event) => {
-      if (
-        !event ||
-        event.mapId !== activeMap.id ||
-        event.sourceMode === mode ||
-        Date.now() - event.updatedAt > 60000 ||
-        seenDiceStreamEventIdsRef.current.has(event.eventId)
-      ) {
-        return
-      }
-      seenDiceStreamEventIdsRef.current.add(event.eventId)
-      if (seenDiceStreamEventIdsRef.current.size > 1200) {
-        seenDiceStreamEventIdsRef.current = new Set([...seenDiceStreamEventIdsRef.current].slice(-600))
-      }
-
-      if (event.type === 'start') {
-        const pending = {
-          diceSeed: event.diceSeed,
-          flyIndex: event.flyIndex,
-          kind: event.kind,
-          count: Math.max(1, Math.round(event.count ?? 1)),
-          sides: Math.max(2, Math.round(event.sides ?? (event.kind === 'd20' ? 20 : 6))),
-          values: event.values,
-          label: event.label,
-          targetName: event.targetName,
-        }
-        pendingDiceStreamsRef.current.set(event.requestId, pending)
-        return
-      }
-
-      if (event.type === 'frame') {
-        const pending =
-          pendingDiceStreamsRef.current.get(event.requestId) ?? {
-            diceSeed: event.requestId,
-            kind: event.kind,
-            count: 1,
-            sides: event.kind === 'd20' ? 20 : 6,
-            label: 'D20',
-            targetName: '',
-          }
-        pending.firstFrame = event.frame
-        pending.firstFrameSeq = event.index
-        pendingDiceStreamsRef.current.set(event.requestId, pending)
-        setSharedDicePreview((current) => {
-          if (current?.id === event.requestId) {
-            return {
-              ...current,
-              traceFrames: [...(current.traceFrames ?? []), event.frame].slice(-900),
-              replayLive: true,
-              liveFrame: event.frame,
-              liveFrameSeq: event.index,
-            }
-          }
-          return {
-            id: event.requestId,
-            kind: pending.kind,
-            count: pending.count,
-            sides: pending.sides,
-            values: pending.values,
-            diceSeed: pending.diceSeed ?? event.requestId,
-            traceFrames: [event.frame],
-            replayLive: true,
-            liveFrame: event.frame,
-            liveFrameSeq: event.index,
-            animationSeed: event.requestId,
-            flyIndex: pending.flyIndex,
-            label: pending.label,
-            targetName: pending.targetName,
-          }
-        })
-        return
-      }
-
-      if (event.type === 'complete') {
-        pendingDiceStreamsRef.current.delete(event.requestId)
-        if (event.kind === 'd20') {
-          window.setTimeout(() => {
-            setSharedDicePreview((current) => (current?.id === event.requestId ? null : current))
-          }, 600)
-        }
-      }
-    })
-    return unsubscribe
-  }, [activeMap?.id, mode])
 
   // T-P2-398 (398-A): subscribe to the result-broadcast channel and self-render
   // the decided @values locally. Isolated from the old dice-stream handler
@@ -5049,80 +4833,21 @@ export default function MapsPage() {
           )}
 
           {roll && <DiceRollOverlay roll={roll} onDone={handleRollDone} />}
-          {(sharedDicePreview?.kind === 'd20' || !!diceBoxD20) && <DiceBoxD20Overlay
-            key={
-              sharedDicePreview?.kind === 'd20'
-                ? `shared-d20-${sharedDicePreview.id}`
-                : diceBoxD20
-                  ? `local-d20-${diceBoxD20.id}`
-                  : 'idle-d20'
-            }
-            active
-            label={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.label : diceBoxD20?.label ?? 'D20'}
-            targetName={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.targetName : diceBoxD20?.targetName ?? ''}
-            value={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.values?.[0] : diceBoxD20?.value}
-            diceSeed={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.diceSeed : diceBoxD20?.diceSeed}
-            traceFrames={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.traceFrames : undefined}
-            replayLive={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.replayLive : false}
-            liveFrame={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.liveFrame : undefined}
-            liveFrameSeq={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.liveFrameSeq : undefined}
-            requestId={
-              sharedDicePreview?.kind === 'd20'
-                ? sharedDicePreview.animationSeed ?? sharedDicePreview.id
-                : diceBoxD20?.animationSeed
-            }
-            flyIndex={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.flyIndex : diceBoxD20?.flyIndex}
-              onFrame={(requestId, frame, index) => {
-                if (!diceBoxD20 || requestId !== diceBoxD20.animationSeed) return
-                const lastIndex = lastPublishedDiceFrameRef.current.get(requestId) ?? -10
-                if (index - lastIndex < 2 && index !== 0) return
-                lastPublishedDiceFrameRef.current.set(requestId, index)
-                publishDiceStream({ type: 'frame', requestId, kind: 'd20', frame, index })
-              }}
-            onComplete={(value, _traceFrames) => {
-              if (sharedDicePreview?.kind === 'd20') {
-                const id = sharedDicePreview.id
-                window.setTimeout(() => {
-                  setSharedDicePreview((current) => (current?.id === id ? null : current))
-                }, 1000)
-                return
-              }
-              if (diceBoxD20) {
+          {diceBoxD20 && (
+            <DiceBoxD20Overlay
+              key={`local-d20-${diceBoxD20.id}`}
+              active
+              label={diceBoxD20.label ?? 'D20'}
+              targetName={diceBoxD20.targetName ?? ''}
+              value={diceBoxD20.value}
+              requestId={diceBoxD20.requestKey}
+              flyIndex={diceBoxD20.flyIndex}
+              onComplete={(value) => {
                 const request = diceBoxD20
-                publishDiceStream({
-                  type: 'complete',
-                  requestId: request.animationSeed ?? request.diceSeed ?? String(request.id),
-                  kind: 'd20',
-                  value,
-                })
-                lastPublishedDiceFrameRef.current.delete(request.animationSeed ?? request.diceSeed ?? String(request.id))
                 request.resolve(value)
                 window.setTimeout(() => {
                   setDiceBoxD20((current) => (current?.id === request.id ? null : current))
                 }, 600)
-              }
-            }}
-          />}
-          {sharedDicePreview?.kind === 'dice' && (
-            <DiceBoxRollOverlay
-              key={sharedDicePreview.id}
-              count={sharedDicePreview.count}
-              sides={sharedDicePreview.sides}
-              label={sharedDicePreview.label}
-              targetName={sharedDicePreview.targetName}
-              values={sharedDicePreview.values}
-              traceFrames={sharedDicePreview.traceFrames}
-              replayLive={sharedDicePreview.replayLive}
-              liveFrame={sharedDicePreview.liveFrame}
-              liveFrameSeq={sharedDicePreview.liveFrameSeq}
-              requestId={sharedDicePreview.animationSeed ?? sharedDicePreview.id}
-              flyIndex={sharedDicePreview.flyIndex}
-              showHud={false}
-              onComplete={() => {
-                const id = sharedDicePreview.id
-                window.setTimeout(() => {
-                  setSharedDicePreview((current) => (current?.id === id ? null : current))
-                }, 3000)
               }}
             />
           )}
@@ -5134,26 +4859,11 @@ export default function MapsPage() {
               label={diceBoxRoll.label}
               targetName={diceBoxRoll.targetName}
               values={diceBoxRoll.values}
-              requestId={diceBoxRoll.animationSeed}
+              requestId={diceBoxRoll.requestKey}
               flyIndex={diceBoxRoll.flyIndex}
               showHud={false}
-              onFrame={(requestId, frame, index) => {
-                if (!diceBoxRoll || requestId !== diceBoxRoll.animationSeed) return
-                const lastIndex = lastPublishedDiceFrameRef.current.get(requestId) ?? -10
-                if (index - lastIndex < 2 && index !== 0) return
-                lastPublishedDiceFrameRef.current.set(requestId, index)
-                publishDiceStream({ type: 'frame', requestId, kind: 'dice', frame, index })
-              }}
               onComplete={(values) => {
                 const request = diceBoxRoll
-                publishDiceStream({
-                  type: 'complete',
-                  requestId: request.animationSeed ?? String(request.id),
-                  kind: 'dice',
-                  value: values[0] ?? 1,
-                  values,
-                })
-                lastPublishedDiceFrameRef.current.delete(request.animationSeed ?? String(request.id))
                 request.resolve(request.values.length > 0 ? request.values : values)
                 window.setTimeout(() => {
                   setDiceBoxRoll((current) => (current?.id === request.id ? null : current))
