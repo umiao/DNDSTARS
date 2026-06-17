@@ -41,17 +41,24 @@ export async function loadSharedResource<T>(name: string): Promise<T | null> {
   return requestJson<T>(`/state/${name}`)
 }
 
+async function sharedCombatIsActive(): Promise<boolean> {
+  const combat = await requestJson<{ active?: boolean }>('/state/combat')
+  return !!combat?.active
+}
+
 export async function saveSharedResource<T>(name: string, data: T): Promise<void> {
-  if (
-    !canWriteSharedState() &&
-    name !== 'characters' &&
-    name !== 'maps' &&
-    name !== 'dodge' &&
-    name !== 'player-action' &&
-    name !== 'dice' &&
-    name !== 'dice-events' &&
-    name !== 'combat-log'
-  ) return
+  if (!canWriteSharedState()) {
+    if (
+      name !== 'characters' &&
+      name !== 'maps' &&
+      name !== 'dodge' &&
+      name !== 'player-action' &&
+      name !== 'dice' &&
+      name !== 'dice-events' &&
+      name !== 'combat-log'
+    ) return
+    if ((name === 'characters' || name === 'maps') && (await sharedCombatIsActive())) return
+  }
   await Promise.allSettled(
     sharedApiCandidates().map((api) =>
       fetch(`${api}/state/${name}`, {
