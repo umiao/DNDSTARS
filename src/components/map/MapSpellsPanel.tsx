@@ -11,10 +11,11 @@ function isSpellLikeSkill(skill: CombatSkill): boolean {
 interface MapSpellsPanelProps {
   charId: string
   onUseSkill?: (skill: CombatSkill) => void
+  onQiReduceSkill?: (skill: CombatSkill) => void
 }
 
 /** 地图战斗 · 法术栏（施法职业显示法术型技能） */
-export default function MapSpellsPanel({ charId, onUseSkill }: MapSpellsPanelProps) {
+export default function MapSpellsPanel({ charId, onUseSkill, onQiReduceSkill }: MapSpellsPanelProps) {
   const c = useCharacterStore((s) => s.characters.find((x) => x.id === charId))
 
   if (!c) return null
@@ -41,6 +42,7 @@ export default function MapSpellsPanel({ charId, onUseSkill }: MapSpellsPanelPro
       scrollColumns
       fillHeight
       onUseSkill={onUseSkill}
+      onQiReduceSkill={onQiReduceSkill}
     />
   )
 }

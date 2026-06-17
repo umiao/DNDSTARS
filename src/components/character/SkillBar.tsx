@@ -34,6 +34,7 @@ export default function SkillBar({
   scrollColumns = false,
   extraInfiniteActions = [],
   onUseSkill,
+  onQiReduceSkill,
   canAct = true,
 }: {
   charId: string
@@ -44,6 +45,7 @@ export default function SkillBar({
   extraInfiniteActions?: InfiniteAction[]
   /** 提供时，点「使用」会回调（用于先选目标/掷骰），而非直接结算 */
   onUseSkill?: (skill: CombatSkill) => void
+  onQiReduceSkill?: (skill: CombatSkill) => void
   canAct?: boolean
 }) {
   const character = useCharacterStore((s) => s.characters.find((c) => c.id === charId))
@@ -212,10 +214,10 @@ export default function SkillBar({
                         key={s.id}
                         skill={s}
                         canReduce={c.inspiration > 0}
-                        canQiReduce={canSpendQi}
+                        canQiReduce={canAct && canSpendQi}
                         onEdit={() => setEditingId(s.id)}
                         onReduce={() => reduceCooldown(charId, s.id)}
-                        onQiReduce={() => useQiReduceCooldown(charId, s.id)}
+                        onQiReduce={() => (onQiReduceSkill ? onQiReduceSkill(s) : useQiReduceCooldown(charId, s.id))}
                         onDelete={() => handleDeleteSkill(s)}
                       />
                     ),

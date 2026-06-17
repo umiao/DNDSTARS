@@ -181,7 +181,7 @@ interface SharedPlayerActionState {
   mapId: string
   sourceMode: 'player'
   status: 'pending' | 'done'
-  type: 'end-turn' | 'attack-token'
+  type: 'end-turn' | 'attack-token' | 'qi-reduce-cooldown'
   actorTokenId: string
   characterId: string
   targetTokenId?: string
@@ -4781,6 +4781,31 @@ export default function MapsPage() {
       return
     }
 
+    if (action.type === 'qi-reduce-cooldown') {
+      const actor = useCharacterStore.getState().characters.find((c) => c.id === action.characterId)
+      const skill = actor?.combatSkills.find((s) => s.id === action.skillId)
+      if (!actor || !skill || skill.remaining <= 0 || (actor.qi ?? 0) < 1) {
+        acknowledgePlayerAction(action, 'rejected', 'invalid-qi-reduce')
+        completePlayerActionRequest(action)
+        return
+      }
+      const ok = useCharacterStore.getState().useQiReduceCooldown(actor.id, skill.id)
+      if (!ok) {
+        acknowledgePlayerAction(action, 'rejected', 'invalid-qi-reduce')
+        completePlayerActionRequest(action)
+        return
+      }
+      const updated = useCharacterStore.getState().characters.find((c) => c.id === actor.id)
+      const updatedSkill = updated?.combatSkills.find((s) => s.id === skill.id)
+      pushCombatLog(
+        `${actor.name} 消耗 1 点气：${skill.name} 冷却 -1。剩余气 ${updated?.qi ?? 0}，剩余冷却 ${updatedSkill?.remaining ?? 0}`,
+        'turn',
+      )
+      completePlayerActionRequest(action)
+      acknowledgePlayerAction(action, 'accepted')
+      return
+    }
+
     if (action.type !== 'end-turn') {
       acknowledgePlayerAction(action, 'rejected', 'unsupported-action')
       completePlayerActionRequest(action)
@@ -4845,6 +4870,31 @@ export default function MapsPage() {
       updatedAt: Date.now(),
     }
     setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 使用 ${skill.name}` })
+    void saveSharedResource<SharedPlayerActionState>('player-action', action)
+    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
+    return true
+  }
+
+  const sendPlayerQiReduceCooldownRequest = (skill: CombatSkill) => {
+    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
+    if (skill.remaining <= 0 || (turnCharacter.qi ?? 0) < 1) return false
+    const seq = playerActionSeqRef.current + 1
+    playerActionSeqRef.current = seq
+    const action: SharedPlayerActionState = {
+      id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
+      mapId: activeMap.id,
+      sourceMode: 'player',
+      status: 'pending',
+      type: 'qi-reduce-cooldown',
+      actorTokenId: currentInitiativeToken.id,
+      characterId: turnCharacter.id,
+      skillId: skill.id,
+      round,
+      initiativeIndex,
+      seq,
+      updatedAt: Date.now(),
+    }
+    setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 消耗气降低冷却` })
     void saveSharedResource<SharedPlayerActionState>('player-action', action)
     void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
     return true
@@ -6000,7 +6050,11 @@ export default function MapsPage() {
                   />
                 )}
                 {charPanel === 'spells' && (
-                  <MapSpellsPanel charId={activeChar.id} onUseSkill={handleUseSkill} />
+                  <MapSpellsPanel
+                    charId={activeChar.id}
+                    onUseSkill={handleUseSkill}
+                    onQiReduceSkill={sendPlayerQiReduceCooldownRequest}
+                  />
                 )}
                 {charPanel === 'skills' &&
                   (isHeavyGunner(activeChar.charClass) ? (
@@ -6034,6 +6088,7 @@ export default function MapsPage() {
                           : []
                       }
                       onUseSkill={handleUseSkill}
+                      onQiReduceSkill={sendPlayerQiReduceCooldownRequest}
                     />
                   ))}
               </div>
