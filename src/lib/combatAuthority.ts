@@ -56,18 +56,18 @@ function cloneState(state: CombatAuthorityState): CombatAuthorityState {
   }
 }
 
-function fail<T>(
+function fail(
   state: CombatAuthorityState,
   reason: AuthorityFailure['reason'],
-): AuthorityResult<T> {
+): AuthorityFailure {
   return { ok: false, state, reason }
 }
 
-function assertDm<T>(
+function assertDm(
   state: CombatAuthorityState,
   role: CombatAuthorityRole,
 ): AuthorityFailure | null {
-  return role === 'dm' ? null : fail<T>(state, 'not-authority')
+  return role === 'dm' ? null : fail(state, 'not-authority')
 }
 
 function updateCharacter(
@@ -105,7 +105,7 @@ export function spendCharacterApAuthority(
   state: CombatAuthorityState,
   params: { role: CombatAuthorityRole; characterId: string; amount: number },
 ): AuthorityResult<SpendApValue> {
-  const denied = assertDm<SpendApValue>(state, params.role)
+  const denied = assertDm(state, params.role)
   if (denied) return denied
   if (!Number.isFinite(params.amount) || params.amount <= 0) return fail(state, 'invalid-amount')
 
@@ -129,7 +129,7 @@ export function spendEnemyApAuthority(
   state: CombatAuthorityState,
   params: { role: CombatAuthorityRole; tokenId: string; amount: number },
 ): AuthorityResult<SpendApValue> {
-  const denied = assertDm<SpendApValue>(state, params.role)
+  const denied = assertDm(state, params.role)
   if (denied) return denied
   if (!Number.isFinite(params.amount) || params.amount <= 0) return fail(state, 'invalid-amount')
 
@@ -172,7 +172,7 @@ export function applyDamageAuthority(
   state: CombatAuthorityState,
   params: { role: CombatAuthorityRole; characterId: string; amount: number },
 ): AuthorityResult<{ hpBefore: number; tempBefore: number; hpAfter: number; tempAfter: number }> {
-  const denied = assertDm<{ hpBefore: number; tempBefore: number; hpAfter: number; tempAfter: number }>(
+  const denied = assertDm(
     state,
     params.role,
   )
@@ -209,7 +209,7 @@ export function resolveDodgeAuthority(
     damage: number
   },
 ): AuthorityResult<DodgeResolutionValue> {
-  const denied = assertDm<DodgeResolutionValue>(state, params.role)
+  const denied = assertDm(state, params.role)
   if (denied) return denied
 
   const target = state.characters.find((item) => item.id === params.targetCharacterId)

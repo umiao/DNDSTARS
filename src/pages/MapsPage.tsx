@@ -770,7 +770,7 @@ export default function MapsPage() {
   const publishCombatState = (
     patch?: Partial<Omit<SharedCombatState, 'mapId' | 'updatedAt'>>,
   ) => {
-    if (!activeMap) return
+    if (!activeMap || mode !== 'dm') return
     const state: SharedCombatState = {
       mapId: activeMap.id,
       active: combatActive,
@@ -856,6 +856,7 @@ export default function MapsPage() {
   const activeChar = characters.find((c) => c.id === activeCharId) ?? null
 
   const resetRoundApForActiveMap = (reason: string) => {
+    if (mode !== 'dm') return useCharacterStore.getState().characters
     if (!activeMap) return useCharacterStore.getState().characters
     const charIds = new Set(
       activeMap.tokens
@@ -884,7 +885,7 @@ export default function MapsPage() {
   }
 
   useEffect(() => {
-    if (!combatActive || !activeMap || initiativeOrder.length === 0 || initiativeIndex !== 0) return
+    if (mode !== 'dm' || !combatActive || !activeMap || initiativeOrder.length === 0 || initiativeIndex !== 0) return
     const key = `${activeMap.id}:${round}`
     if (roundApResetKeysRef.current.has(key)) return
     roundApResetKeysRef.current.add(key)
@@ -1114,6 +1115,7 @@ export default function MapsPage() {
 
   useEffect(() => {
     if (!activeMap || applyingSharedCombatRef.current) return
+    if (mode !== 'dm') return
     if (!combatActive && initiativeOrder.length === 0) return
     publishCombatState()
   }, [activeMap?.id, combatActive, round, initiativeIndex, initiativeOrder, enemyApByToken])
@@ -4617,6 +4619,7 @@ export default function MapsPage() {
 
   useEffect(() => {
     if (!combatActive || !activeMap || initiativeOrder.length === 0) return
+    if (!isDM) return
 
     const entry = initiativeOrder[initiativeIndex]
     if (!entry) {
@@ -4659,6 +4662,10 @@ export default function MapsPage() {
       return
     }
     if (!turnCharacter?.id || currentInitiativeToken?.type !== 'player') return
+    if (!isDM) {
+      setActiveCharId(turnCharacter.id)
+      return
+    }
     const key = `turn-${round}-${initiativeIndex}-${currentInitiativeToken.id}`
     const latest = useCharacterStore.getState().characters.find((c) => c.id === turnCharacter.id)
     if (latest?.combatBuffs?.turnStartKey === key) {
@@ -4678,16 +4685,17 @@ export default function MapsPage() {
       })
     }
     setActiveCharId(turnCharacter.id)
-  }, [canControlPlayerTurn, turnCharacter?.id, round, initiativeIndex, currentInitiativeToken?.id, currentInitiativeToken?.type])
+  }, [canControlPlayerTurn, turnCharacter?.id, round, initiativeIndex, currentInitiativeToken?.id, currentInitiativeToken?.type, isDM])
 
   useEffect(() => {
     if (!combatActive || !activeMap || !currentInitiativeToken) return
+    if (!isDM) return
     if (tryEndCombatIfNeeded()) return
     if (!isTokenAlive(currentInitiativeToken, characters)) {
       const timer = window.setTimeout(() => advanceInitiativeCore(), 50)
       return () => window.clearTimeout(timer)
     }
-  }, [combatActive, activeMap?.id, currentInitiativeToken?.id, characters, defeatedTokenIds.length])
+  }, [combatActive, activeMap?.id, currentInitiativeToken?.id, characters, defeatedTokenIds.length, isDM])
 
   const handlePlayerEndTurn = (event?: React.MouseEvent) => {
     event?.stopPropagation()
