@@ -172,6 +172,7 @@ interface SharedDodgeState {
   wantsDodge?: boolean
   dodgeD20?: number
   dodgeApSpent?: boolean
+  expiresAt?: number
   updatedAt: number
 }
 
@@ -557,7 +558,9 @@ export default function MapsPage() {
     id: string
     result: EnemyTurnResult
     targetChar: Character
+    expiresAt?: number
   } | null>(null)
+  const [sharedDodgeNow, setSharedDodgeNow] = useState(Date.now())
   const [pendingPlayerAction, setPendingPlayerAction] = useState<{
     id: string
     label: string
@@ -599,6 +602,13 @@ export default function MapsPage() {
     >(),
   )
   const seenSharedLogIdsRef = useRef(new Set<number>())
+
+  useEffect(() => {
+    if (!sharedDodgePrompt?.expiresAt) return
+    setSharedDodgeNow(Date.now())
+    const timer = window.setInterval(() => setSharedDodgeNow(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [sharedDodgePrompt?.id, sharedDodgePrompt?.expiresAt])
 
   const hashDiceSeed = (text: string): number => {
     let hash = 2166136261
@@ -1210,6 +1220,23 @@ export default function MapsPage() {
       if (suppressedDodgePromptIdsRef.current.has(state.id)) return
       if (isDM) {
         const pending = pendingSharedDodgeRef.current
+        if (
+          pending &&
+          state.id === pending.id &&
+          state.status === 'pending' &&
+          state.expiresAt != null &&
+          Date.now() >= state.expiresAt
+        ) {
+          pendingSharedDodgeRef.current = null
+          await saveSharedResource('dodge', { ...state, status: 'done', wantsDodge: false, updatedAt: Date.now() })
+          const targetChar = useCharacterStore.getState().characters.find((c) => c.id === pending.targetCharId)
+          if (targetChar) {
+            void finishEnemyAttack(pending.result, targetChar, false, undefined, false).then(pending.onComplete)
+          } else {
+            pending.onComplete()
+          }
+          return
+        }
         if (pending && state.id === pending.id && state.status === 'answered') {
           pendingSharedDodgeRef.current = null
           await saveSharedResource('dodge', { ...state, status: 'done', updatedAt: Date.now() })
@@ -1220,12 +1247,20 @@ export default function MapsPage() {
               targetChar,
               !!state.wantsDodge,
               state.dodgeD20,
-              !!state.dodgeApSpent,
+              false,
             ).then(pending.onComplete)
           } else {
             pending.onComplete()
           }
         }
+        return
+      }
+      if (
+        state.status === 'pending' &&
+        state.expiresAt != null &&
+        Date.now() >= state.expiresAt
+      ) {
+        setSharedDodgePrompt((current) => (current?.id === state.id ? null : current))
         return
       }
       if (state.status !== 'pending') {
@@ -1239,7 +1274,7 @@ export default function MapsPage() {
         (targetChar.id === playerChar?.id ||
           visibleChars.some((c) => c.id === targetChar.id) ||
           !targetChar.dmNotes)
-      if (canAnswer) setSharedDodgePrompt({ id: state.id, result: state.result, targetChar })
+      if (canAnswer) setSharedDodgePrompt({ id: state.id, result: state.result, targetChar, expiresAt: state.expiresAt })
     }
     void load()
     const timer = window.setInterval(load, 500)
@@ -4283,6 +4318,7 @@ export default function MapsPage() {
     if (canDodge) {
       if (isDM && activeMap) {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+        const expiresAt = Date.now() + 15000
         pendingSharedDodgeRef.current = { id, result, targetCharId: targetChar!.id, onComplete }
         void saveSharedResource<SharedDodgeState>('dodge', {
           id,
@@ -4290,6 +4326,7 @@ export default function MapsPage() {
           status: 'pending',
           result,
           targetCharId: targetChar!.id,
+          expiresAt,
           updatedAt: Date.now(),
         })
         return
@@ -4339,6 +4376,58 @@ export default function MapsPage() {
     const prompt = sharedDodgePrompt
     const latestTarget =
       useCharacterStore.getState().characters.find((c) => c.id === prompt.targetChar.id) ?? prompt.targetChar
+    {
+      if (wantsDodge && !canAttemptDodge(latestTarget)) {
+        alert('行动点不足，无法尝试闪避。')
+        return
+      }
+      suppressedDodgePromptIdsRef.current.add(prompt.id)
+      setSharedDodgePrompt(null)
+      if (wantsDodge) {
+        void saveSharedResource<SharedDodgeState>('dodge', {
+          id: prompt.id,
+          mapId: activeMap.id,
+          status: 'rolling',
+          result: prompt.result,
+          targetCharId: latestTarget.id,
+          wantsDodge,
+          expiresAt: prompt.expiresAt,
+          updatedAt: Date.now(),
+        })
+      }
+      const dodgeD20 = wantsDodge
+        ? await rollDiceBoxD20('闪避判定 D20', latestTarget.name)
+        : undefined
+      if (dodgeD20 != null) {
+        publishSharedDiceRoll({
+          values: [],
+          sides: 20,
+          bonus: 0,
+          total: 0,
+          label: '闪避判定',
+          targetName: latestTarget.name,
+          d20Roll: {
+            value: dodgeD20,
+            modifier: ENEMY_MELEE_ATTACK_BONUS,
+            ac: latestTarget.ac,
+            hit: dodgeD20 + ENEMY_MELEE_ATTACK_BONUS >= latestTarget.ac,
+            kind: 'dodge',
+          },
+        })
+      }
+      void saveSharedResource<SharedDodgeState>('dodge', {
+        id: prompt.id,
+        mapId: activeMap.id,
+        status: 'answered',
+        result: prompt.result,
+        targetCharId: latestTarget.id,
+        wantsDodge,
+        dodgeD20,
+        expiresAt: prompt.expiresAt,
+        updatedAt: Date.now(),
+      })
+      return
+    }
     let dodgeApSpent = false
     if (wantsDodge) {
       if (!canAttemptDodge(latestTarget)) {
@@ -4381,10 +4470,10 @@ export default function MapsPage() {
         label: '闪避判定',
         targetName: latestTarget.name,
         d20Roll: {
-          value: dodgeD20,
+          value: Number(dodgeD20),
           modifier: ENEMY_MELEE_ATTACK_BONUS,
           ac: latestTarget.ac,
-          hit: dodgeD20 + ENEMY_MELEE_ATTACK_BONUS >= latestTarget.ac,
+          hit: Number(dodgeD20) + ENEMY_MELEE_ATTACK_BONUS >= latestTarget.ac,
           kind: 'dodge',
         },
       })
@@ -5130,8 +5219,13 @@ export default function MapsPage() {
               <div
                 role="dialog"
                 aria-labelledby="shared-dodge-prompt-title"
-                className="mx-4 w-full max-w-md rounded-2xl border border-sky-400/35 bg-void-950/95 p-5 shadow-2xl"
+                className="relative mx-4 w-full max-w-md rounded-2xl border border-sky-400/35 bg-void-950/95 p-5 shadow-2xl"
               >
+                {sharedDodgePrompt.expiresAt != null && (
+                  <div className="absolute right-5 top-5 rounded-full border border-sky-300/40 bg-sky-500/15 px-2 py-0.5 text-xs font-bold tabular-nums text-sky-100">
+                    {Math.max(0, Math.ceil((sharedDodgePrompt.expiresAt - sharedDodgeNow) / 1000))}s
+                  </div>
+                )}
                 <h3 id="shared-dodge-prompt-title" className="text-lg font-semibold text-sky-100">
                   闪避
                 </h3>
