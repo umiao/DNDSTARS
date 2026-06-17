@@ -5,6 +5,7 @@ import useImage from 'use-image'
 import { getImage } from '../../lib/imageStore'
 import {
   loadCalmMindIcon,
+  loadDoubleArrowIcon,
   loadEagleEyeIcon,
   loadHuntingMarkIcon,
   loadIgniteIcon,
@@ -12,7 +13,6 @@ import {
   loadOutOfBreathIcon,
   loadPoisonIcon,
   loadPreciseStrikeIcon,
-  loadProcessedImage,
   loadSilentDrawIcon,
 } from '../../lib/imageAlpha'
 import {
@@ -32,7 +32,6 @@ import {
   type GridCell,
 } from '../../lib/gridCombat'
 
-const DOUBLE_ARROW_ICON = '/icons/double-arrow.png'
 const TOKEN_MOVE_DURATION = TOKEN_MOVE_DURATION_S
 import { useMapStore } from '../../store/maps'
 import type { BattleMap, Token } from '../../store/maps'
@@ -64,6 +63,13 @@ export interface MapProjectile {
   from: { x: number; y: number }
   to: { x: number; y: number }
   kind?: 'arrow' | 'focus'
+}
+
+export interface DeleteSelectionRect {
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
 interface MapCanvasProps {
@@ -100,7 +106,7 @@ interface MapCanvasProps {
   >
   tokenHoverLabels?: Record<string, string>
   projectiles?: MapProjectile[]
-  /** 已阵亡 token（灰显、不可拖动） */
+  /** 已阵亡 token（灰显） */
   defeatedTokenIds?: string[]
   /** 战斗中禁止拖动的 token */
   lockDragTokenIds?: string[]
@@ -113,6 +119,9 @@ interface MapCanvasProps {
   gridSizePreview?: boolean
   onGridSizeChange?: (gridSize: number) => void
   onBlankContextMenu?: () => void
+  deleteSelectMode?: boolean
+  onDeleteBoxConfirm?: (rect: DeleteSelectionRect) => void
+  onDeleteCancel?: () => void
   /** DM 视角：始终显示敌人血量条；玩家视角受 token.showHpOnToken 控制 */
   isDM?: boolean
 }
@@ -120,6 +129,17 @@ interface MapCanvasProps {
 interface Point {
   x: number
   y: number
+}
+
+function rectFromPoints(a: Point, b: Point): DeleteSelectionRect {
+  const x = Math.min(a.x, b.x)
+  const y = Math.min(a.y, b.y)
+  return {
+    x,
+    y,
+    width: Math.abs(a.x - b.x),
+    height: Math.abs(a.y - b.y),
+  }
 }
 
 function measurePointsEqual(a: Point, b: Point): boolean {
@@ -189,11 +209,11 @@ function DoubleArrowBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex
   const size = rightBadgeSize(radius)
   const r = size / 2
   const { x, y } = rightBadgeGridPos(radius, size, gridIndex)
-  const strokeW = tokenLineWidth(radius, 1.5)
+  const fallbackStrokeW = tokenLineWidth(radius, 1.5)
 
   useEffect(() => {
     let cancelled = false
-    loadProcessedImage(DOUBLE_ARROW_ICON).then((c) => {
+    loadDoubleArrowIcon().then((c) => {
       if (!cancelled) setIconCanvas(c)
     })
     return () => {
@@ -203,39 +223,37 @@ function DoubleArrowBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex
 
   return (
     <Group x={x} y={y} listening={false}>
-      <Circle
-        radius={r}
-        fill="rgba(245,158,11,0.95)"
-        stroke="#fff7ed"
-        strokeWidth={strokeW}
-        shadowBlur={4 * tokenScale(radius)}
-        shadowColor="rgba(0,0,0,0.45)"
-      />
       {iconCanvas ? (
         <KonvaImage
           image={iconCanvas}
-          width={size * 0.82}
-          height={size * 0.82}
-          offsetX={(size * 0.82) / 2}
-          offsetY={(size * 0.82) / 2}
+          width={size}
+          height={size}
+          offsetX={r}
+          offsetY={r}
           x={0}
           y={0}
           shadowBlur={4 * tokenScale(radius)}
-          shadowColor="rgba(0,0,0,0.5)"
+          shadowColor="rgba(34,197,94,0.55)"
         />
       ) : (
         <>
+          <Circle
+            radius={r}
+            fill="rgba(5,46,22,0.18)"
+            stroke="#22c55e"
+            strokeWidth={fallbackStrokeW}
+          />
           <Text
             text="×2"
             fontSize={Math.max(9, r * 0.95)}
-            fill="#1c1917"
+            fill="#bbf7d0"
             fontStyle="bold"
             align="center"
             verticalAlign="middle"
             width={size}
             height={size}
-            offsetX={size / 2}
-            offsetY={size / 2}
+            offsetX={r}
+            offsetY={r}
           />
         </>
       )}
@@ -653,6 +671,9 @@ export default function MapCanvas({
   gridSizePreview = false,
   onGridSizeChange,
   onBlankContextMenu,
+  deleteSelectMode = false,
+  onDeleteBoxConfirm,
+  onDeleteCancel,
   isDM = false,
 }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -667,6 +688,8 @@ export default function MapCanvas({
   const [image] = useImage(url)
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
   const [hoveredTokenId, setHoveredTokenId] = useState<string | null>(null)
+  const [dragPreviewPositions, setDragPreviewPositions] = useState<Record<string, Point>>({})
+  const [deleteDrag, setDeleteDrag] = useState<{ start: Point; current: Point } | null>(null)
   const fittedRef = useRef(false)
 
   // 测距状态（图片坐标）：已确定的线段 + 正在放置的起点/光标
@@ -676,6 +699,11 @@ export default function MapCanvas({
 
   const updateToken = useMapStore((s) => s.updateToken)
 
+  const displayToken = (token: Token): Token => {
+    const preview = dragPreviewPositions[token.id]
+    return preview ? { ...token, x: preview.x, y: preview.y } : token
+  }
+
   // 退出测距模式时清除全部测量线
   useEffect(() => {
     if (!measureMode) {
@@ -684,6 +712,10 @@ export default function MapCanvas({
       setCursor(null)
     }
   }, [measureMode])
+
+  useEffect(() => {
+    if (!deleteSelectMode) setDeleteDrag(null)
+  }, [deleteSelectMode])
 
   // 网格对齐：方向键微调
   useEffect(() => {
@@ -949,9 +981,11 @@ export default function MapCanvas({
             ? 'cursor-crosshair'
             : aoeSelectMode
               ? 'cursor-crosshair'
-              : moveSelectMode
-                ? 'cursor-cell'
-                : ''
+              : deleteSelectMode
+                ? 'cursor-crosshair'
+                : moveSelectMode
+                  ? 'cursor-cell'
+                  : ''
       }`}
     >
       <Stage
@@ -961,7 +995,7 @@ export default function MapCanvas({
         scaleY={view.scale}
         x={view.x}
         y={view.y}
-        draggable={!measureMode && !moveSelectMode && !aoeSelectMode && !gridAdjustMode}
+        draggable={!measureMode && !moveSelectMode && !aoeSelectMode && !gridAdjustMode && !deleteSelectMode}
         onWheel={handleWheel}
         onDragEnd={(e) => {
           // 仅当拖动的是舞台本身（平移）时更新视图
@@ -972,6 +1006,11 @@ export default function MapCanvas({
         onContextMenu={(e) => {
           // 屏蔽浏览器右键菜单；测距时右键取消正在放置的起点
           e.evt.preventDefault()
+          if (deleteSelectMode) {
+            setDeleteDrag(null)
+            onDeleteCancel?.()
+            return
+          }
           if (aoeSelectMode) {
             onAoeCancel?.()
             return
@@ -987,6 +1026,12 @@ export default function MapCanvas({
         }}
         onMouseDown={(e) => {
           const stage = e.target.getStage()
+          if (deleteSelectMode && e.evt.button === 0) {
+            e.cancelBubble = true
+            const p = relativePoint(stage)
+            if (p) setDeleteDrag({ start: p, current: p })
+            return
+          }
           if (aoeSelectMode && e.evt.button === 0) {
             e.cancelBubble = true
             const p = relativePoint(stage)
@@ -1031,6 +1076,11 @@ export default function MapCanvas({
           if (!isMapTokenNode(e.target)) onSelectToken(null)
         }}
         onMouseMove={(e) => {
+          if (deleteSelectMode && deleteDrag) {
+            const p = relativePoint(e.target.getStage())
+            if (p) setDeleteDrag((drag) => (drag ? { ...drag, current: p } : drag))
+            return
+          }
           if (aoeSelectMode && onAoePreviewCell) {
             const p = relativePoint(e.target.getStage())
             if (p) onAoePreviewCell(gridPoint(p))
@@ -1050,6 +1100,14 @@ export default function MapCanvas({
             const raw = relativePoint(e.target.getStage())
             if (raw) setCursor(measurePoint(raw))
           }
+        }}
+        onMouseUp={(e) => {
+          if (!deleteSelectMode || !deleteDrag) return
+          e.cancelBubble = true
+          const p = relativePoint(e.target.getStage()) ?? deleteDrag.current
+          const rect = rectFromPoints(deleteDrag.start, p)
+          setDeleteDrag(null)
+          if (rect.width >= 4 && rect.height >= 4) onDeleteBoxConfirm?.(rect)
         }}
       >
         <Layer>
@@ -1126,7 +1184,8 @@ export default function MapCanvas({
             const defeated = hp != null ? hp.hp <= 0 : defeatedTokenIds.includes(t.id)
             return (
             <TokenNode
-              key={t.id}
+              key={`body-${t.id}`}
+              renderMode="body"
               token={t}
               gridSize={map.gridSize}
               builtinGrid={builtinGrid}
@@ -1134,8 +1193,8 @@ export default function MapCanvas({
               defeated={defeated}
               draggable={
                 isDM &&
-                !defeated &&
                 !measureMode &&
+                !deleteSelectMode &&
                 !gridAdjustMode &&
                 !lockDragTokenIds.includes(t.id)
               }
@@ -1155,12 +1214,24 @@ export default function MapCanvas({
               hoverLabel={hoveredTokenId === t.id ? tokenHoverLabels[t.id] : undefined}
               onHoverChange={(hovered) => setHoveredTokenId(hovered ? t.id : (id) => (id === t.id ? null : id))}
               onSelect={() => {
-                if (aoeSelectMode) return
+                if (aoeSelectMode || deleteSelectMode) return
                 onSelectToken(t.id)
               }}
               onDragEnd={(x, y) => {
                 const pos = resolveTokenDropPosition(x, y, t, map)
                 updateToken(map.id, t.id, pos)
+                setDragPreviewPositions((prev) => {
+                  if (!prev[t.id]) return prev
+                  const next = { ...prev }
+                  delete next[t.id]
+                  return next
+                })
+              }}
+              onDragMove={(x, y) => {
+                setDragPreviewPositions((prev) => ({
+                  ...prev,
+                  [t.id]: { x, y },
+                }))
               }}
             />
             )
@@ -1169,6 +1240,87 @@ export default function MapCanvas({
           {projectiles.map((projectile) => (
             <ProjectileArrow key={projectile.id} projectile={projectile} />
           ))}
+
+          {map.tokens.map((t) => {
+            const hp = hpByToken?.[t.id]
+            const defeated = hp != null ? hp.hp <= 0 : defeatedTokenIds.includes(t.id)
+            return (
+              <TokenNode
+                key={`label-${t.id}`}
+                renderMode="label"
+                token={displayToken(t)}
+                gridSize={map.gridSize}
+                builtinGrid={builtinGrid}
+                selected={t.id === selectedTokenId}
+                defeated={defeated}
+                draggable={false}
+                hp={hpByToken?.[t.id]}
+                showHpBar={
+                  !!hpByToken?.[t.id] &&
+                  (isDM || !!t.characterId || t.showHpOnToken !== false)
+                }
+                doubleArrowBadge={tokenBadges[t.id]?.doubleArrow}
+                eagleEyeBadge={tokenBadges[t.id]?.eagleEye}
+                silentDrawBadge={tokenBadges[t.id]?.silentDraw}
+                preciseStrikeBadge={tokenBadges[t.id]?.preciseStrike}
+                calmMindBadge={tokenBadges[t.id]?.calmMind}
+                calmSpiritStacks={tokenBadges[t.id]?.calmSpiritStacks}
+                outOfBreathBadge={tokenBadges[t.id]?.outOfBreath}
+                huntingMarkStacks={tokenBadges[t.id]?.huntingMarkStacks}
+                hoverLabel={hoveredTokenId === t.id ? tokenHoverLabels[t.id] : undefined}
+                onHoverChange={() => undefined}
+                onSelect={() => undefined}
+                instantPosition={!!dragPreviewPositions[t.id]}
+                onDragEnd={() => undefined}
+              />
+            )
+          })}
+
+          {map.tokens.map((t) => {
+            const hp = hpByToken?.[t.id]
+            const defeated = hp != null ? hp.hp <= 0 : defeatedTokenIds.includes(t.id)
+            return (
+              <TokenNode
+                key={`vitals-${t.id}`}
+                renderMode="vitals"
+                token={displayToken(t)}
+                gridSize={map.gridSize}
+                builtinGrid={builtinGrid}
+                selected={t.id === selectedTokenId}
+                defeated={defeated}
+                draggable={false}
+                hp={hpByToken?.[t.id]}
+                showHpBar={
+                  !!hpByToken?.[t.id] &&
+                  (isDM || !!t.characterId || t.showHpOnToken !== false)
+                }
+                doubleArrowBadge={tokenBadges[t.id]?.doubleArrow}
+                eagleEyeBadge={tokenBadges[t.id]?.eagleEye}
+                silentDrawBadge={tokenBadges[t.id]?.silentDraw}
+                preciseStrikeBadge={tokenBadges[t.id]?.preciseStrike}
+                calmMindBadge={tokenBadges[t.id]?.calmMind}
+                calmSpiritStacks={tokenBadges[t.id]?.calmSpiritStacks}
+                outOfBreathBadge={tokenBadges[t.id]?.outOfBreath}
+                huntingMarkStacks={tokenBadges[t.id]?.huntingMarkStacks}
+                hoverLabel={hoveredTokenId === t.id ? tokenHoverLabels[t.id] : undefined}
+                onHoverChange={() => undefined}
+                onSelect={() => undefined}
+                instantPosition={!!dragPreviewPositions[t.id]}
+                onDragEnd={() => undefined}
+              />
+            )
+          })}
+
+          {deleteDrag && (
+            <Rect
+              {...rectFromPoints(deleteDrag.start, deleteDrag.current)}
+              fill="rgba(239,68,68,0.14)"
+              stroke="rgba(248,113,113,0.95)"
+              strokeWidth={2 * inv}
+              dash={[10 * inv, 6 * inv]}
+              listening={false}
+            />
+          )}
 
           {/* 已确定的测距线段（右键删除） */}
           {segments.map((seg, i) => (
@@ -1413,6 +1565,7 @@ function ProjectileArrow({ projectile }: { projectile: MapProjectile }) {
 }
 
 function TokenNode({
+  renderMode = 'full',
   token,
   gridSize,
   builtinGrid = false,
@@ -1432,8 +1585,11 @@ function TokenNode({
   hoverLabel,
   onHoverChange,
   onSelect,
+  onDragMove,
   onDragEnd,
+  instantPosition = false,
 }: {
+  renderMode?: 'full' | 'body' | 'overlay' | 'label' | 'vitals'
   token: Token
   gridSize: number
   builtinGrid?: boolean
@@ -1453,10 +1609,13 @@ function TokenNode({
   hoverLabel?: string
   onHoverChange?: (hovered: boolean) => void
   onSelect: () => void
+  onDragMove?: (x: number, y: number) => void
   onDragEnd: (x: number, y: number) => void
+  instantPosition?: boolean
 }) {
   const groupRef = useRef<Konva.Group>(null)
   const draggingRef = useRef(false)
+  const suppressClickUntilRef = useRef(0)
   const prevGridSizeRef = useRef(gridSize)
   const radius = tokenDisplayRadius(gridSize, token.size, builtinGrid)
   const labelSize = Math.max(9, radius * 0.42)
@@ -1516,7 +1675,10 @@ function TokenNode({
       return
     }
 
-    if (draggingRef.current) return
+    if (draggingRef.current || instantPosition) {
+      node.position({ x: token.x, y: token.y })
+      return
+    }
 
     const dist = Math.hypot(node.x() - token.x, node.y() - token.y)
     if (dist < 1) {
@@ -1530,109 +1692,32 @@ function TokenNode({
       duration: TOKEN_MOVE_DURATION,
       easing: Konva.Easings.EaseInOut,
     })
-  }, [token.x, token.y, gridSize])
+  }, [token.x, token.y, gridSize, instantPosition])
 
-  return (
-    <Group
-      ref={groupRef}
-      name="map-token"
-      draggable={draggable}
-      opacity={defeated ? 0.55 : 1}
-      onClick={onSelect}
-      onTap={onSelect}
-      onMouseEnter={() => onHoverChange?.(true)}
-      onMouseLeave={() => onHoverChange?.(false)}
-      onDragStart={() => {
-        draggingRef.current = true
-        onSelect()
-      }}
-      onDragEnd={(e) => {
-        draggingRef.current = false
-        onDragEnd(e.target.x(), e.target.y())
-      }}
-    >
-      {selected && (
-        <Circle
-          radius={radius + selectedGap}
-          stroke="#a78bfa"
-          strokeWidth={selectedStrokeW}
-          dash={tokenDash(radius, [8, 6])}
-          listening={false}
-        />
-      )}
-      {(token.stunTurns ?? 0) > 0 && <StunGlow radius={radius} />}
-      {(token.knockbackTurns ?? 0) > 0 && <KnockbackLiftGlow radius={radius} />}
-      {calmMindBadge && <CalmMindAura radius={radius} />}
-      {outOfBreathBadge && <OutOfBreathHeat radius={radius} />}
-      {((token.burningTurns ?? 0) > 0 || (token.igniteTurns ?? 0) > 0) && (
-        <BurningGlow radius={radius} />
-      )}
-      {(token.poisonTurns ?? 0) > 0 && <PoisonCloudGlow radius={radius} />}
-      <Circle
-        radius={radius}
-        fill={defeated ? 'rgba(30,32,45,0.92)' : 'rgba(10,11,22,0.85)'}
-        stroke={strokeColor}
-        strokeWidth={
-          (token.stunTurns ?? 0) > 0 ||
-          (token.knockbackTurns ?? 0) > 0 ||
-          (token.burningTurns ?? 0) > 0 ||
-          (token.igniteTurns ?? 0) > 0 ||
-          (token.poisonTurns ?? 0) > 0 ||
-          calmMindBadge ||
-          outOfBreathBadge
-            ? statusStrokeW
-            : baseStrokeW
-        }
+  const nameLayer = (
+    <Group y={radius + 4}>
+      <Rect
+        x={-radius - 6}
+        width={(radius + 6) * 2}
+        height={labelBarH}
+        fill="rgba(10,11,22,0.8)"
+        cornerRadius={Math.max(4, radius * 0.12)}
       />
-      {defeated && (
-        <Circle
-          radius={radius}
-          fill="rgba(148,163,184,0.35)"
-          listening={false}
-        />
-      )}
-      {(token.poisonTurns ?? 0) > 0 && (token.burningTurns ?? 0) > 0 && (
-        <Circle
-          radius={radius + 3 * scale}
-          stroke="#86efac"
-          strokeWidth={secondaryStrokeW}
-          opacity={0.7}
-          dash={tokenDash(radius, [4, 6])}
-          listening={false}
-        />
-      )}
+      <Text
+        text={token.label}
+        fontSize={labelSize}
+        fill={defeated ? '#94a3b8' : '#e2e8f0'}
+        width={(radius + 6) * 2}
+        offsetX={radius + 6}
+        height={labelBarH}
+        align="center"
+        verticalAlign="middle"
+      />
+    </Group>
+  )
 
-      {hoverLabel && (
-        <Group y={-radius - 34 * scale} listening={false}>
-          <Rect
-            x={-radius * 1.2}
-            y={-10 * scale}
-            width={radius * 2.4}
-            height={20 * scale}
-            cornerRadius={5 * scale}
-            fill="rgba(10,11,22,0.92)"
-            stroke="rgba(125,211,252,0.65)"
-            strokeWidth={tokenLineWidth(radius, 1)}
-            shadowBlur={6 * scale}
-            shadowColor="rgba(0,0,0,0.55)"
-          />
-          <Text
-            text={hoverLabel}
-            x={-radius * 1.2}
-            y={-8 * scale}
-            width={radius * 2.4}
-            height={16 * scale}
-            fontSize={Math.max(8, radius * 0.32)}
-            fontStyle="bold"
-            fill="#bae6fd"
-            align="center"
-            verticalAlign="middle"
-            listening={false}
-          />
-        </Group>
-      )}
-
-      {/* 生命条（Token 上方） */}
+  const vitalsLayer = (
+    <>
       {showHpBar && hpPct !== null && (
         <Group y={-radius - 12}>
           <Rect x={-barW / 2} width={barW} height={6} cornerRadius={3} fill="rgba(10,11,22,0.85)" />
@@ -1678,22 +1763,7 @@ function TokenNode({
           />
         </Group>
       )}
-      <Text
-        text={token.emoji}
-        fontSize={radius}
-        width={radius * 2}
-        height={radius * 2}
-        offsetX={radius}
-        offsetY={radius}
-        align="center"
-        verticalAlign="middle"
-        opacity={defeated ? 0.65 : 1}
-      />
-      {((token.burningTurns ?? 0) > 0 || (token.igniteTurns ?? 0) > 0) && (
-        <BurningFlames radius={radius} />
-      )}
-      {(token.poisonTurns ?? 0) > 0 && <PoisonCloud radius={radius} />}
-      {(token.stunTurns ?? 0) > 0 && <StunOrbitStars radius={radius} />}
+
       {(() => {
         let grid = 0
         return (
@@ -1767,26 +1837,323 @@ function TokenNode({
           </>
         )
       })()}
-      {/* 名称标签 */}
-      <Group y={radius + 4}>
-        <Rect
-          x={-radius - 6}
-          width={(radius + 6) * 2}
-          height={labelBarH}
-          fill="rgba(10,11,22,0.8)"
-          cornerRadius={Math.max(4, radius * 0.12)}
-        />
-        <Text
-          text={token.label}
-          fontSize={labelSize}
-          fill={defeated ? '#94a3b8' : '#e2e8f0'}
-          width={(radius + 6) * 2}
-          offsetX={radius + 6}
-          height={labelBarH}
-          align="center"
-          verticalAlign="middle"
-        />
+
+      {renderMode !== 'body' && hoverLabel && (
+        <Group y={-radius - 34 * scale} listening={false}>
+          <Rect
+            x={-radius * 1.2}
+            y={-10 * scale}
+            width={radius * 2.4}
+            height={20 * scale}
+            cornerRadius={5 * scale}
+            fill="rgba(10,11,22,0.92)"
+            stroke="rgba(125,211,252,0.65)"
+            strokeWidth={tokenLineWidth(radius, 1)}
+            shadowBlur={6 * scale}
+            shadowColor="rgba(0,0,0,0.55)"
+          />
+          <Text
+            text={hoverLabel}
+            x={-radius * 1.2}
+            y={-8 * scale}
+            width={radius * 2.4}
+            height={16 * scale}
+            fontSize={Math.max(8, radius * 0.32)}
+            fontStyle="bold"
+            fill="#bae6fd"
+            align="center"
+            verticalAlign="middle"
+            listening={false}
+          />
+        </Group>
+      )}
+    </>
+  )
+
+  const infoLayer = (
+    <>
+      {nameLayer}
+      {vitalsLayer}
+    </>
+  )
+
+  if (renderMode === 'overlay' || renderMode === 'label' || renderMode === 'vitals') {
+    return (
+      <Group
+        ref={groupRef}
+        listening={false}
+        opacity={defeated ? 0.75 : 1}
+      >
+        {renderMode === 'label' ? nameLayer : renderMode === 'vitals' ? vitalsLayer : infoLayer}
       </Group>
+    )
+  }
+
+  const handleTokenSelect = () => {
+    if (draggingRef.current || Date.now() < suppressClickUntilRef.current) return
+    onSelect()
+  }
+
+  return (
+    <Group
+      ref={groupRef}
+      name="map-token"
+      draggable={draggable}
+      opacity={defeated ? 0.55 : 1}
+      onClick={handleTokenSelect}
+      onTap={handleTokenSelect}
+      onMouseEnter={() => onHoverChange?.(true)}
+      onMouseLeave={() => onHoverChange?.(false)}
+      onDragStart={() => {
+        draggingRef.current = true
+      }}
+      onDragMove={(e) => {
+        onDragMove?.(e.target.x(), e.target.y())
+      }}
+      onDragEnd={(e) => {
+        suppressClickUntilRef.current = Date.now() + 250
+        draggingRef.current = false
+        onDragEnd(e.target.x(), e.target.y())
+      }}
+    >
+      {selected && (
+        <Circle
+          radius={radius + selectedGap}
+          stroke="#a78bfa"
+          strokeWidth={selectedStrokeW}
+          dash={tokenDash(radius, [8, 6])}
+          listening={false}
+        />
+      )}
+      {(token.stunTurns ?? 0) > 0 && <StunGlow radius={radius} />}
+      {(token.knockbackTurns ?? 0) > 0 && <KnockbackLiftGlow radius={radius} />}
+      {calmMindBadge && <CalmMindAura radius={radius} />}
+      {outOfBreathBadge && <OutOfBreathHeat radius={radius} />}
+      {((token.burningTurns ?? 0) > 0 || (token.igniteTurns ?? 0) > 0) && (
+        <BurningGlow radius={radius} />
+      )}
+      {(token.poisonTurns ?? 0) > 0 && <PoisonCloudGlow radius={radius} />}
+      <Circle
+        radius={radius}
+        fill={defeated ? 'rgba(30,32,45,0.92)' : 'rgba(10,11,22,0.85)'}
+        stroke={strokeColor}
+        strokeWidth={
+          (token.stunTurns ?? 0) > 0 ||
+          (token.knockbackTurns ?? 0) > 0 ||
+          (token.burningTurns ?? 0) > 0 ||
+          (token.igniteTurns ?? 0) > 0 ||
+          (token.poisonTurns ?? 0) > 0 ||
+          calmMindBadge ||
+          outOfBreathBadge
+            ? statusStrokeW
+            : baseStrokeW
+        }
+      />
+      {defeated && (
+        <Circle
+          radius={radius}
+          fill="rgba(148,163,184,0.35)"
+          listening={false}
+        />
+      )}
+      {(token.poisonTurns ?? 0) > 0 && (token.burningTurns ?? 0) > 0 && (
+        <Circle
+          radius={radius + 3 * scale}
+          stroke="#86efac"
+          strokeWidth={secondaryStrokeW}
+          opacity={0.7}
+          dash={tokenDash(radius, [4, 6])}
+          listening={false}
+        />
+      )}
+
+      {renderMode !== 'body' && hoverLabel && (
+        <Group y={-radius - 34 * scale} listening={false}>
+          <Rect
+            x={-radius * 1.2}
+            y={-10 * scale}
+            width={radius * 2.4}
+            height={20 * scale}
+            cornerRadius={5 * scale}
+            fill="rgba(10,11,22,0.92)"
+            stroke="rgba(125,211,252,0.65)"
+            strokeWidth={tokenLineWidth(radius, 1)}
+            shadowBlur={6 * scale}
+            shadowColor="rgba(0,0,0,0.55)"
+          />
+          <Text
+            text={hoverLabel}
+            x={-radius * 1.2}
+            y={-8 * scale}
+            width={radius * 2.4}
+            height={16 * scale}
+            fontSize={Math.max(8, radius * 0.32)}
+            fontStyle="bold"
+            fill="#bae6fd"
+            align="center"
+            verticalAlign="middle"
+            listening={false}
+          />
+        </Group>
+      )}
+
+      {/* 生命条（Token 上方） */}
+      {renderMode !== 'body' && showHpBar && hpPct !== null && (
+        <Group y={-radius - 12}>
+          <Rect x={-barW / 2} width={barW} height={6} cornerRadius={3} fill="rgba(10,11,22,0.85)" />
+          {tempHp > 0 ? (
+            <>
+              <Rect
+                x={-barW / 2}
+                width={barW * (hpPct + tempHpPct)}
+                height={6}
+                cornerRadius={3}
+                fill="#facc15"
+                opacity={0.95}
+              />
+              <Rect x={-barW / 2} width={barW * hpPct} height={6} cornerRadius={3} fill={hpColor} />
+              {hpPct > 0 && tempHpPct > 0 && (
+                <>
+                  <Rect
+                    x={-barW / 2 + Math.max(0, barW * hpPct - 3)}
+                    width={3}
+                    height={6}
+                    fill={hpColor}
+                  />
+                  <Rect
+                    x={-barW / 2 + Math.max(0, barW * hpPct - 0.5)}
+                    width={1}
+                    height={6}
+                    fill="rgba(15,23,42,0.75)"
+                  />
+                </>
+              )}
+            </>
+          ) : (
+            <Rect x={-barW / 2} width={barW * hpPct} height={6} cornerRadius={3} fill={hpColor} />
+          )}
+          <Text
+            text={tempHp > 0 ? `${hp!.hp}/${hp!.max} (+${tempHp})` : `${hp!.hp}/${hp!.max}`}
+            y={-labelSize - 2}
+            width={barW * 1.8}
+            x={-barW * 0.9}
+            fontSize={labelSize}
+            fill="#e2e8f0"
+            align="center"
+          />
+        </Group>
+      )}
+      <Text
+        text={token.emoji}
+        fontSize={radius}
+        width={radius * 2}
+        height={radius * 2}
+        offsetX={radius}
+        offsetY={radius}
+        align="center"
+        verticalAlign="middle"
+        opacity={defeated ? 0.65 : 1}
+      />
+      {((token.burningTurns ?? 0) > 0 || (token.igniteTurns ?? 0) > 0) && (
+        <BurningFlames radius={radius} />
+      )}
+      {(token.poisonTurns ?? 0) > 0 && <PoisonCloud radius={radius} />}
+      {(token.stunTurns ?? 0) > 0 && <StunOrbitStars radius={radius} />}
+      {renderMode !== 'body' && (() => {
+        let grid = 0
+        return (
+          <>
+            {doubleArrowBadge && (
+              <DoubleArrowBadge radius={radius} gridIndex={grid++} />
+            )}
+            {eagleEyeBadge && (
+              <EagleEyeBadge radius={radius} gridIndex={grid++} />
+            )}
+            {silentDrawBadge && (
+              <SilentDrawBadge radius={radius} gridIndex={grid++} />
+            )}
+            {preciseStrikeBadge && (
+              <PreciseStrikeBadge radius={radius} gridIndex={grid++} />
+            )}
+            {((token.burningTurns ?? 0) > 0 || (token.igniteTurns ?? 0) > 0) && (
+              <IgniteBadge radius={radius} gridIndex={grid++} />
+            )}
+            {(token.knockbackTurns ?? 0) > 0 && (
+              <KnockbackBadge radius={radius} gridIndex={grid++} />
+            )}
+            {(token.stunTurns ?? 0) > 0 && (
+              <StatusTurnBadge
+                radius={radius}
+                gridIndex={grid++}
+                emoji="★"
+                turns={token.stunTurns!}
+                stroke="#facc15"
+                fill="#fef9c3"
+              />
+            )}
+            {(token.poisonTurns ?? 0) > 0 && (
+              <PoisonBadge radius={radius} gridIndex={grid++} />
+            )}
+            {calmMindBadge &&
+              (() => {
+                const calmGrid = grid++
+                return (
+                  <>
+                    <CalmMindBadge radius={radius} gridIndex={calmGrid} />
+                    {calmSpiritStacks > 0 && (
+                      <BadgeCornerNumber
+                        radius={radius}
+                        gridIndex={calmGrid}
+                        text={String(calmSpiritStacks)}
+                        stroke="#ffffff"
+                      />
+                    )}
+                  </>
+                )
+              })()}
+            {outOfBreathBadge && (
+              <OutOfBreathBadge radius={radius} gridIndex={grid++} />
+            )}
+            {huntingMarkStacks > 0 &&
+              (() => {
+                const markGrid = grid++
+                return (
+                  <>
+                    <HuntingMarkBadge radius={radius} gridIndex={markGrid} />
+                    <BadgeCornerNumber
+                      radius={radius}
+                      gridIndex={markGrid}
+                      text={String(huntingMarkStacks)}
+                      stroke="#ffffff"
+                    />
+                  </>
+                )
+              })()}
+          </>
+        )
+      })()}
+      {/* 名称标签 */}
+      {renderMode !== 'body' && (
+        <Group y={radius + 4}>
+          <Rect
+            x={-radius - 6}
+            width={(radius + 6) * 2}
+            height={labelBarH}
+            fill="rgba(10,11,22,0.8)"
+            cornerRadius={Math.max(4, radius * 0.12)}
+          />
+          <Text
+            text={token.label}
+            fontSize={labelSize}
+            fill={defeated ? '#94a3b8' : '#e2e8f0'}
+            width={(radius + 6) * 2}
+            offsetX={radius + 6}
+            height={labelBarH}
+            align="center"
+            verticalAlign="middle"
+          />
+        </Group>
+      )}
     </Group>
   )
 }

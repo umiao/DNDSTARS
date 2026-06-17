@@ -549,7 +549,6 @@ export default function MapsPage() {
   // T-P2-398 (398-A): dedup roll-request by requestId (AC3) — same requestId
   // arriving twice (SSE fan-out to multiple local endpoints) renders once.
   const seenRollRequestIdsRef = useRef(new Set<string>())
-  const lastPublishedDiceFrameRef = useRef(new Map<string, number>())
   const pendingDiceStreamsRef = useRef(
     new Map<
       string,
@@ -5061,25 +5060,13 @@ export default function MapsPage() {
             label={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.label : diceBoxD20?.label ?? 'D20'}
             targetName={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.targetName : diceBoxD20?.targetName ?? ''}
             value={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.values?.[0] : diceBoxD20?.value}
-            diceSeed={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.diceSeed : diceBoxD20?.diceSeed}
-            traceFrames={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.traceFrames : undefined}
-            replayLive={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.replayLive : false}
-            liveFrame={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.liveFrame : undefined}
-            liveFrameSeq={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.liveFrameSeq : undefined}
             requestId={
               sharedDicePreview?.kind === 'd20'
                 ? sharedDicePreview.animationSeed ?? sharedDicePreview.id
                 : diceBoxD20?.animationSeed
             }
             flyIndex={sharedDicePreview?.kind === 'd20' ? sharedDicePreview.flyIndex : diceBoxD20?.flyIndex}
-              onFrame={(requestId, frame, index) => {
-                if (!diceBoxD20 || requestId !== diceBoxD20.animationSeed) return
-                const lastIndex = lastPublishedDiceFrameRef.current.get(requestId) ?? -10
-                if (index - lastIndex < 2 && index !== 0) return
-                lastPublishedDiceFrameRef.current.set(requestId, index)
-                publishDiceStream({ type: 'frame', requestId, kind: 'd20', frame, index })
-              }}
-            onComplete={(value, _traceFrames) => {
+            onComplete={(value) => {
               if (sharedDicePreview?.kind === 'd20') {
                 const id = sharedDicePreview.id
                 window.setTimeout(() => {
@@ -5089,13 +5076,6 @@ export default function MapsPage() {
               }
               if (diceBoxD20) {
                 const request = diceBoxD20
-                publishDiceStream({
-                  type: 'complete',
-                  requestId: request.animationSeed ?? request.diceSeed ?? String(request.id),
-                  kind: 'd20',
-                  value,
-                })
-                lastPublishedDiceFrameRef.current.delete(request.animationSeed ?? request.diceSeed ?? String(request.id))
                 request.resolve(value)
                 window.setTimeout(() => {
                   setDiceBoxD20((current) => (current?.id === request.id ? null : current))
@@ -5111,10 +5091,6 @@ export default function MapsPage() {
               label={sharedDicePreview.label}
               targetName={sharedDicePreview.targetName}
               values={sharedDicePreview.values}
-              traceFrames={sharedDicePreview.traceFrames}
-              replayLive={sharedDicePreview.replayLive}
-              liveFrame={sharedDicePreview.liveFrame}
-              liveFrameSeq={sharedDicePreview.liveFrameSeq}
               requestId={sharedDicePreview.animationSeed ?? sharedDicePreview.id}
               flyIndex={sharedDicePreview.flyIndex}
               showHud={false}
@@ -5137,23 +5113,8 @@ export default function MapsPage() {
               requestId={diceBoxRoll.animationSeed}
               flyIndex={diceBoxRoll.flyIndex}
               showHud={false}
-              onFrame={(requestId, frame, index) => {
-                if (!diceBoxRoll || requestId !== diceBoxRoll.animationSeed) return
-                const lastIndex = lastPublishedDiceFrameRef.current.get(requestId) ?? -10
-                if (index - lastIndex < 2 && index !== 0) return
-                lastPublishedDiceFrameRef.current.set(requestId, index)
-                publishDiceStream({ type: 'frame', requestId, kind: 'dice', frame, index })
-              }}
               onComplete={(values) => {
                 const request = diceBoxRoll
-                publishDiceStream({
-                  type: 'complete',
-                  requestId: request.animationSeed ?? String(request.id),
-                  kind: 'dice',
-                  value: values[0] ?? 1,
-                  values,
-                })
-                lastPublishedDiceFrameRef.current.delete(request.animationSeed ?? String(request.id))
                 request.resolve(request.values.length > 0 ? request.values : values)
                 window.setTimeout(() => {
                   setDiceBoxRoll((current) => (current?.id === request.id ? null : current))

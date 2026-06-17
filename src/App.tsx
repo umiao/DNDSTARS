@@ -7,8 +7,6 @@ import MapsPage from './pages/MapsPage'
 import CharactersPage from './pages/CharactersPage'
 import CombatPage from './pages/CombatPage'
 import AIPage from './pages/AIPage'
-// TEMPORARY (T-P2-395 spike); route + page removed by T-P2-400.
-import DiceSpikePage from './pages/DiceSpikePage'
 import { modeFromPort } from './lib/appMode'
 import { useMapStore } from './store/maps'
 import { useCharacterStore } from './store/characters'
@@ -33,7 +31,7 @@ export default function App() {
     <div className="flex h-screen w-screen overflow-hidden">
       <iframe
         title="D20 dice preloader"
-        src="/dice-box-frame.html?scale=6.4&seed=d20-preload&badge=0"
+        src="/dice-box-frame.html?badge=0"
         className="dice-box-preload-frame"
         sandbox="allow-scripts allow-same-origin"
         aria-hidden="true"
@@ -52,8 +50,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={endpointMode === 'player' ? <Navigate to="/maps" replace /> : <Dashboard />} />
           <Route path="/maps" element={<MapsPage />} />
-          {/* TEMPORARY spike route (T-P2-395); removed by T-P2-400. */}
-          <Route path="/dice-spike" element={<DiceSpikePage />} />
           <Route path="/characters" element={<CharactersPage />} />
           {endpointMode !== 'player' && <Route path="/combat" element={<CombatPage />} />}
           {endpointMode !== 'player' && <Route path="/ai" element={<AIPage />} />}

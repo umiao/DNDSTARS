@@ -35,6 +35,17 @@ export const DICE_THEME: DiceColorset = {
 }
 
 export const DICE_ASSET_PATH = '/assets/dice-threejs/'
+export const DICE_BASE_SCALE = 69
+export const DICE_D4_BASE_SCALE = 66
+export const DICE_D4_LABEL_SCALE = 1.25
+export const DICE_D4_THEME: DiceColorset = {
+  ...DICE_THEME,
+  name: 'arcane-purple-readable-d4',
+  foreground: '#ffffff',
+  background: '#6d28d9',
+  outline: '#16002f',
+  material: 'plastic',
+}
 
 // AC2 — the pinned payload. `values` is the per-die up-face multiset (removed
 // dice excluded, matching the visible faces); `total` is the engine total;
@@ -76,7 +87,7 @@ export async function createDiceBox(
   container: string | HTMLElement,
   options: CreateDiceBoxOptions = {},
 ): Promise<DiceEngineBox> {
-  const { scale = 100, theme = DICE_THEME, onComplete } = options
+  const { scale = DICE_BASE_SCALE, theme = DICE_THEME, onComplete } = options
 
   // Per-roll delivery slot. Both redundant sources (config callback, promise)
   // call deliver(); the first to arrive clears the slot, so the rest are no-ops.

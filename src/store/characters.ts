@@ -41,7 +41,6 @@ function uid(): string {
 
 let lastSharedCharactersSnapshot = ''
 let lastLocalCharactersWriteAt = 0
-let lastLoadedSharedCharactersById = new Map<string, Character>()
 
 interface SharedCharactersState {
   characters: Character[]
@@ -67,18 +66,15 @@ function applyStillWatersHealingOnBreathShift(before: Character, after: Characte
   return { ...after, currentHp: Math.min(after.maxHp, after.currentHp + heal) }
 }
 
-function mergePlayerWritableCharacter(local: Character, shared: Character, sharedIsNewer: boolean): Character {
-  const previousShared = lastLoadedSharedCharactersById.get(local.id)
-  const localChangedAp = !sharedIsNewer && previousShared ? local.currentAP !== previousShared.currentAP : false
-  const localChangedActionPoints = !sharedIsNewer && previousShared ? local.actionPoints !== previousShared.actionPoints : false
+function mergePlayerWritableCharacter(local: Character, shared: Character): Character {
   return {
     ...local,
     currentHp: shared.currentHp,
     maxHp: shared.maxHp,
     tempHp: shared.tempHp,
     conditions: shared.conditions,
-    actionPoints: localChangedActionPoints ? local.actionPoints : shared.actionPoints,
-    currentAP: localChangedAp ? local.currentAP : shared.currentAP,
+    actionPoints: shared.actionPoints,
+    currentAP: shared.currentAP,
   }
 }
 
@@ -656,11 +652,10 @@ export const useCharacterStore = create<CharacterState>()(
             const shared = await loadSharedResource<SharedCharactersState>('characters')
             if (shared?.characters) {
               const sharedById = new Map(shared.characters.map((ch) => [ch.id, ch]))
-              const sharedIsNewer = (shared.updatedAt ?? 0) > lastLocalCharactersWriteAt
               characters = characters.map((ch) => {
                 const sharedChar = sharedById.get(ch.id)
                 if (!sharedChar) return ch
-                return mergePlayerWritableCharacter(ch, sharedChar, sharedIsNewer)
+                return mergePlayerWritableCharacter(ch, sharedChar)
               })
               set({ characters })
             }
@@ -711,9 +706,6 @@ export const useCharacterStore = create<CharacterState>()(
             characters: shared.characters.map(finalizeCharacter),
             selectedId: shared.selectedId ?? shared.characters[0]?.id ?? null,
           })
-          lastLoadedSharedCharactersById = new Map(
-            shared.characters.map((ch) => [ch.id, finalizeCharacter(ch)]),
-          )
           if (shared.updatedAt != null) lastLocalCharactersWriteAt = shared.updatedAt
         },
         select: (id) => set({ selectedId: id }),
@@ -814,12 +806,11 @@ export const useCharacterStore = create<CharacterState>()(
               charId,
               name: c.name,
               before: c.currentAP,
-              after: c.actionPoints,
+              after: c.currentAP,
               max: c.actionPoints,
             })
             return {
               ...c,
-              currentAP: c.actionPoints,
               combatBuffs: {
                 ...combatBuffs,
                 steadyDrawUsedThisTurn: undefined,

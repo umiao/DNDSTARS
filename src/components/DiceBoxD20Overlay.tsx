@@ -9,15 +9,9 @@ interface DiceBoxD20OverlayProps {
   targetName: string
   visualOnly?: boolean
   value?: number
-  diceSeed?: string
-  traceFrames?: number[][]
-  replayLive?: boolean
-  liveFrame?: number[]
-  liveFrameSeq?: number
   requestId?: string
   flyIndex?: number
-  onComplete: (value: number, traceFrames?: number[][]) => void
-  onFrame?: (requestId: string, frame: number[], index: number) => void
+  onComplete: (value: number) => void
 }
 
 function clampD20(value: unknown): number {
@@ -52,15 +46,9 @@ export default function DiceBoxD20Overlay({
   targetName: _targetName,
   visualOnly = false,
   value,
-  diceSeed,
-  traceFrames,
-  replayLive = false,
-  liveFrame,
-  liveFrameSeq,
   requestId: forcedRequestId,
   flyIndex,
   onComplete,
-  onFrame,
 }: DiceBoxD20OverlayProps) {
   void _label
   void _targetName
@@ -72,10 +60,7 @@ export default function DiceBoxD20Overlay({
   const completedRef = useRef(false)
   const readyRef = useRef(false)
   const sentRequestRef = useRef<string | null>(null)
-  const completedTraceFramesRef = useRef<number[][] | undefined>(undefined)
   const onCompleteRef = useRef(onComplete)
-  const onFrameRef = useRef(onFrame)
-  const traceFramesRef = useRef(traceFrames)
   const [flyX, flyY] = useMemo(
     () => FLY_OFFSETS[flyIndex == null ? stableIndex(requestId, FLY_OFFSETS.length) : Math.abs(Math.round(flyIndex)) % FLY_OFFSETS.length],
     [flyIndex, requestId],
@@ -86,17 +71,8 @@ export default function DiceBoxD20Overlay({
   }, [onComplete])
 
   useEffect(() => {
-    onFrameRef.current = onFrame
-  }, [onFrame])
-
-  useEffect(() => {
-    traceFramesRef.current = traceFrames
-  }, [traceFrames])
-
-  useEffect(() => {
     if (!active) return
     completedRef.current = false
-    completedTraceFramesRef.current = undefined
     const startedAt = Date.now()
     let cancelled = false
     const log = (stage: string, details?: Record<string, unknown>) => {
@@ -115,9 +91,7 @@ export default function DiceBoxD20Overlay({
       log('finish', { finalValue })
       const delay = Math.max(0, MIN_VISIBLE_ROLL_MS - (Date.now() - startedAt))
       window.setTimeout(() => {
-        if (!cancelled) {
-          onCompleteRef.current(finalValue, completedTraceFramesRef.current)
-        }
+        if (!cancelled) onCompleteRef.current(finalValue)
       }, delay)
     }
     const sendRoll = () => {
@@ -125,7 +99,7 @@ export default function DiceBoxD20Overlay({
       sentRequestRef.current = requestId
       log('send-roll')
       iframeRef.current?.contentWindow?.postMessage(
-        { type: 'roll-d20', requestId, value, seed: diceSeed, traceFrames: traceFramesRef.current, replayLive },
+        { type: 'roll-d20', requestId, value },
         window.location.origin,
       )
     }
@@ -140,17 +114,10 @@ export default function DiceBoxD20Overlay({
         type?: string
         requestId?: string
         value?: unknown
-        traceFrames?: number[][]
-        frame?: number[]
-        index?: number
         stage?: string
       } | undefined
       if (data?.type === 'dice-box-debug') {
         console.info('[dice-box-debug]', data)
-        return
-      }
-      if (data?.type === 'dice-box-d20-frame' && data.requestId === requestId && Array.isArray(data.frame)) {
-        onFrameRef.current?.(requestId, data.frame, Math.max(0, Math.round(Number(data.index) || 0)))
         return
       }
       if (data?.type === 'dice-box-ready' && !readyRef.current) {
@@ -161,7 +128,6 @@ export default function DiceBoxD20Overlay({
       }
       if (data?.type !== 'dice-box-d20-result' || data.requestId !== requestId) return
       log('result-message', { value: data.value })
-      if (Array.isArray(data.traceFrames)) completedTraceFramesRef.current = data.traceFrames
       finish(value ?? data.value)
     }
 
@@ -183,22 +149,14 @@ export default function DiceBoxD20Overlay({
       window.clearTimeout(retry)
       window.removeEventListener('message', handleMessage)
     }
-  }, [active, diceSeed, replayLive, requestId, value])
-
-  useEffect(() => {
-    if (!active || !replayLive || !liveFrame || liveFrameSeq == null) return
-    iframeRef.current?.contentWindow?.postMessage(
-      { type: 'dice-trace-frame', requestId, frame: liveFrame, index: liveFrameSeq },
-      window.location.origin,
-    )
-  }, [active, liveFrame, liveFrameSeq, replayLive, requestId])
+  }, [active, requestId, value])
 
   return (
     <div className={`pointer-events-none absolute inset-0 z-[60] ${active ? '' : 'dice-box-d20-stage--idle'}`}>
       <iframe
         ref={iframeRef}
         title="D20 dice roller"
-        src="/dice-box-frame.html?scale=6.4&seed=d20-stage&badge=0"
+        src="/dice-box-frame.html?badge=0"
         className="dice-box-d20-frame"
         style={{ '--dice-fly-x': flyX, '--dice-fly-y': flyY } as CSSProperties}
         sandbox="allow-scripts allow-same-origin"

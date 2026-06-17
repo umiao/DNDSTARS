@@ -30,8 +30,16 @@ function mergePlayerTokenCombatFields(localMaps: BattleMap[], sharedMaps: Battle
       tokens: map.tokens.map((token) => {
         const sharedToken = sharedTokenById.get(token.id)
         if (!sharedToken) return token
+        const dmControlledPosition =
+          token.type !== 'player'
+            ? {
+                x: sharedToken.x,
+                y: sharedToken.y,
+              }
+            : {}
         return {
           ...token,
+          ...dmControlledPosition,
           hp: sharedToken.hp,
           maxHp: sharedToken.maxHp,
           burningTurns: sharedToken.burningTurns,

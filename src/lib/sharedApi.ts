@@ -46,7 +46,6 @@ export async function saveSharedResource<T>(name: string, data: T): Promise<void
     !canWriteSharedState() &&
     name !== 'characters' &&
     name !== 'maps' &&
-    name !== 'combat' &&
     name !== 'dodge' &&
     name !== 'dice' &&
     name !== 'dice-events' &&

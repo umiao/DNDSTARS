@@ -1,11 +1,15 @@
 export type CircleMaskKind = 'knockback' | 'burning' | 'ignite'
 
 /** 图标资源版本，更新 PNG 后递增以绕过浏览器缓存 */
-const ICON_CACHE_VERSION = 17
+const ICON_CACHE_VERSION = 18
 
 export interface StripIconOptions {
   /** 状态图标：仅去掉彩色外圈以外的底，保留圆内白色 */
   circleMask?: CircleMaskKind
+  /** 只移除浅色棋盘格，保留图标内部的暗色背景。 */
+  preserveDarkInterior?: boolean
+  /** 中心区域视为图标主体，主体内的白色高光不透明化。 */
+  preserveCenterRadiusRatio?: number
 }
 
 function isCheckerboardBg(r: number, g: number, b: number): boolean {
@@ -146,7 +150,18 @@ export function stripLightBackground(
       const r = d[i]
       const g = d[i + 1]
       const b = d[i + 2]
-      if (isCheckerboardBg(r, g, b)) {
+      const max = Math.max(r, g, b)
+      const pixel = i / 4
+      const x = pixel % width
+      const y = Math.floor(pixel / width)
+      const preserveRadius = (options?.preserveCenterRadiusRatio ?? 0) * Math.min(width, height)
+      const insidePreservedCenter =
+        preserveRadius > 0 && Math.hypot(x - width / 2, y - height / 2) <= preserveRadius
+      if (
+        isCheckerboardBg(r, g, b) &&
+        !insidePreservedCenter &&
+        !(options?.preserveDarkInterior && max <= 52)
+      ) {
         d[i + 3] = 0
       }
     }
@@ -219,6 +234,13 @@ export function loadPoisonIcon(): Promise<HTMLCanvasElement | null> {
 
 export function loadEagleEyeIcon(): Promise<HTMLCanvasElement | null> {
   return loadBakedStatusIcon('/icons/eagle-eye.png')
+}
+
+export function loadDoubleArrowIcon(): Promise<HTMLCanvasElement | null> {
+  return loadProcessedImage('/icons/double-arrow.png', {
+    preserveCenterRadiusRatio: 0.48,
+    preserveDarkInterior: true,
+  })
 }
 
 export function loadCalmMindIcon(): Promise<HTMLCanvasElement | null> {

@@ -34,6 +34,7 @@ export default function SkillBar({
   scrollColumns = false,
   extraInfiniteActions = [],
   onUseSkill,
+  canAct = true,
 }: {
   charId: string
   hideTurnControls?: boolean
@@ -43,6 +44,7 @@ export default function SkillBar({
   extraInfiniteActions?: InfiniteAction[]
   /** 提供时，点「使用」会回调（用于先选目标/掷骰），而非直接结算 */
   onUseSkill?: (skill: CombatSkill) => void
+  canAct?: boolean
 }) {
   const character = useCharacterStore((s) => s.characters.find((c) => c.id === charId))
   const useSkill = useCharacterStore((s) => s.useSkill)
@@ -158,8 +160,9 @@ export default function SkillBar({
                 <ReadySkill
                   key={s.id}
                   skill={s}
-                  canUse={!s.usedThisTurn && c.currentAP >= s.apCost}
+                  canUse={canAct && !s.usedThisTurn && c.currentAP >= s.apCost}
                   notEnoughAP={c.currentAP < s.apCost}
+                  disabledLabel={!canAct ? '未到回合' : undefined}
                   effectiveCd={effectiveCd(s)}
                   onEdit={() => setEditingId(s.id)}
                   onUse={() => (onUseSkill ? onUseSkill(s) : useSkill(charId, s.id))}
@@ -196,8 +199,9 @@ export default function SkillBar({
                       <ReadySkill
                         key={s.id}
                         skill={s}
-                        canUse={!s.usedThisTurn && c.currentAP >= s.apCost}
+                        canUse={canAct && !s.usedThisTurn && c.currentAP >= s.apCost}
                         notEnoughAP={c.currentAP < s.apCost}
+                        disabledLabel={!canAct ? '未到回合' : undefined}
                         effectiveCd={effectiveCd(s)}
                         onEdit={() => setEditingId(s.id)}
                         onUse={() => (onUseSkill ? onUseSkill(s) : useSkill(charId, s.id))}
@@ -340,6 +344,7 @@ function ReadySkill({
   skill,
   canUse,
   notEnoughAP,
+  disabledLabel,
   effectiveCd,
   onEdit,
   onUse,
@@ -348,6 +353,7 @@ function ReadySkill({
   skill: CombatSkill
   canUse: boolean
   notEnoughAP: boolean
+  disabledLabel?: string
   effectiveCd: number
   onEdit: () => void
   onUse: () => void
@@ -392,12 +398,12 @@ function ReadySkill({
           canUse ? 'bg-emerald-500/25 text-emerald-200 hover:bg-emerald-500/40' : 'cursor-not-allowed bg-white/5 text-slate-600',
         ].join(' ')}
       >
-        {skill.usedThisTurn ? '已用' : notEnoughAP ? '行动点不足' : (
+        {skill.usedThisTurn ? '已用' : disabledLabel ?? (notEnoughAP ? '行动点不足' : (
           <>
             {dmg && <Crosshair className="h-3 w-3" />}
             {dmg ? '释放' : '使用'}
           </>
-        )}
+        ))}
       </button>
     </div>
   )

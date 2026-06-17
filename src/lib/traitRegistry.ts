@@ -155,8 +155,8 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '双箭',
     usage: 'perLongRest',
     description:
-      '当你释放只发射一枚箭矢的远程基础射击时，你可以将发射的箭矢改为两支。每日 {uses} 次；每提升 1 级，每日使用上限 +1。',
-    maxUsesAtRank: (r) => r,
+      '当你释放只发射一枚箭矢的远程普通射击时，你可以将发射的箭矢改为两支，并额外造成 1D4 点穿刺伤害。每日 {uses} 次；每提升 1 级，每日使用上限 +1。提升至 3 级时，额外伤害改为 1D6 点穿刺伤害。',
+    maxUsesAtRank: (r) => r + 1,
   },
   {
     key: 'armorPiercingArrow',

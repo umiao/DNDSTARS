@@ -125,7 +125,7 @@ export function canArmDoubleArrow(c: Character | undefined): boolean {
 export function canUseDoubleArrow(c: Character | undefined, skill: CombatSkill): boolean {
   if (!c || !canArmDoubleArrow(c)) return false
   if (skill.damageCount <= 0) return false
-  return isBasicShot(skill)
+  return isBasicShot(skill) && (skill.arrowShots ?? 1) === 1
 }
 
 export function canUseArmorPiercing(

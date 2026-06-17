@@ -19,18 +19,12 @@ interface DiceBoxRollOverlayProps {
   sides: number
   label: string
   targetName: string
-  scale?: number
   visualOnly?: boolean
   values?: number[]
-  traceFrames?: number[][]
-  replayLive?: boolean
-  liveFrame?: number[]
-  liveFrameSeq?: number
   requestId?: string
   flyIndex?: number
   showHud?: boolean
   onComplete: (values: number[]) => void
-  onFrame?: (requestId: string, frame: number[], index: number) => void
 }
 
 function fallbackValues(count: number, sides: number) {
@@ -51,18 +45,12 @@ export default function DiceBoxRollOverlay({
   sides,
   label,
   targetName,
-  scale = 4.8,
   visualOnly = false,
   values: forcedValues,
-  traceFrames,
-  replayLive = false,
-  liveFrame,
-  liveFrameSeq,
   requestId: forcedRequestId,
   flyIndex,
   showHud: _showHud = false,
   onComplete,
-  onFrame,
 }: DiceBoxRollOverlayProps) {
   void _showHud
   void visualOnly
@@ -71,12 +59,11 @@ export default function DiceBoxRollOverlay({
   const rawId = useId()
   const generatedRequestId = `dice-${rawId}`
   const requestId = forcedRequestId ?? generatedRequestId
+  const iframeSides = Math.max(2, Math.min(100, Math.round(Number(sides) || 6)))
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const readyRef = useRef(false)
   const completedRef = useRef(false)
   const onCompleteRef = useRef(onComplete)
-  const onFrameRef = useRef(onFrame)
-  const traceFramesRef = useRef(traceFrames)
   const [flyX, flyY] = useMemo(
     () => FLY_OFFSETS[flyIndex == null ? stableIndex(requestId, FLY_OFFSETS.length) : Math.abs(Math.round(flyIndex)) % FLY_OFFSETS.length],
     [flyIndex, requestId],
@@ -85,14 +72,6 @@ export default function DiceBoxRollOverlay({
   useEffect(() => {
     onCompleteRef.current = onComplete
   }, [onComplete])
-
-  useEffect(() => {
-    onFrameRef.current = onFrame
-  }, [onFrame])
-
-  useEffect(() => {
-    traceFramesRef.current = traceFrames
-  }, [traceFrames])
 
   useEffect(() => {
     const startedAt = Date.now()
@@ -134,8 +113,6 @@ export default function DiceBoxRollOverlay({
           qty: safeCount,
           sides: safeSides,
           values: forcedValues,
-          traceFrames: traceFramesRef.current,
-          replayLive,
         },
         window.location.origin,
       )
@@ -146,16 +123,10 @@ export default function DiceBoxRollOverlay({
         type?: string
         requestId?: string
         values?: unknown
-        frame?: number[]
-        index?: number
         stage?: string
       } | undefined
       if (data?.type === 'dice-box-debug') {
         console.info('[dice-box-debug]', data)
-        return
-      }
-      if (data?.type === 'dice-box-roll-frame' && data.requestId === requestId && Array.isArray(data.frame)) {
-        onFrameRef.current?.(requestId, data.frame, Math.max(0, Math.round(Number(data.index) || 0)))
         return
       }
       if (data?.type === 'dice-box-ready' && !readyRef.current) {
@@ -183,22 +154,14 @@ export default function DiceBoxRollOverlay({
       window.clearTimeout(fallback)
       window.removeEventListener('message', handleMessage)
     }
-  }, [count, forcedValues, replayLive, requestId, sides])
-
-  useEffect(() => {
-    if (!replayLive || !liveFrame || liveFrameSeq == null) return
-    iframeRef.current?.contentWindow?.postMessage(
-      { type: 'dice-trace-frame', requestId, frame: liveFrame, index: liveFrameSeq },
-      window.location.origin,
-    )
-  }, [liveFrame, liveFrameSeq, replayLive, requestId])
+  }, [count, forcedValues, requestId, sides])
 
   return (
     <div className="pointer-events-none absolute inset-0 z-[60]">
       <iframe
         ref={iframeRef}
         title={`${sides}-sided dice roller`}
-        src={`/dice-box-frame.html?scale=${scale}&seed=${encodeURIComponent(requestId)}&badge=0`}
+        src={`/dice-box-frame.html?badge=0&sides=${iframeSides}`}
         className="dice-box-damage-frame dice-box-roll-flight"
         style={{ '--dice-fly-x': flyX, '--dice-fly-y': flyY } as CSSProperties}
         sandbox="allow-scripts allow-same-origin"

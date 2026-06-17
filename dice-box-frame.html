@@ -56,21 +56,17 @@
       T-P2-398 result-broadcast (each end self-renders @values). "Backward compat"
       here is the SINGLE-END postMessage path only.
 
-      Inert-but-kept (removed in T-P2-401): the `seed` / `scale` URL params, the
-      `traceFrames: []` field in results, and the `dice-trace-frame` listener.
+      T-P2-401 removed the inert Babylon-era protocol residue: seed/scale params,
+      trace result fields, and the per-tick replay listener. The local `sides`
+      query remains only for dice-specific threejs sizing/theme, such as D4.
     -->
     <script type="module">
-      import { createDiceBox } from './src/lib/diceEngine'
+      import { createDiceBox, DICE_BASE_SCALE, DICE_D4_BASE_SCALE, DICE_D4_LABEL_SCALE, DICE_D4_THEME } from './src/lib/diceEngine'
       import { buildNotation } from './src/lib/diceNotation'
 
       const params = new URLSearchParams(window.location.search)
       const ORIGIN = window.location.origin
-
-      // Inert (Babylon-era): `seed` (determinism) and `scale` (Babylon baseScale
-      // units, meaningless to threejs). Accepted so the React side needs no change
-      // (AC4); cleaned up in T-P2-401. threejs uses the wrapper's validated scale.
-      void params.get('seed')
-      void params.get('scale')
+      const frameSides = Math.max(2, Math.min(100, Math.round(Number(params.get('sides')) || 6)))
 
       let boxPromise = null
       // requestId-level exactly-once: even if a request is posted twice (promise +
@@ -87,11 +83,39 @@
 
       function getBox() {
         if (!boxPromise) {
+          if (frameSides === 4) installD4LabelScale()
           // Single shared physics world; the wrapper serializes rolls (a second
           // roll while one is in flight rejects rather than corrupting delivery).
-          boxPromise = createDiceBox('#dice')
+          boxPromise = createDiceBox('#dice', {
+            scale: frameSides === 4 ? DICE_D4_BASE_SCALE : DICE_BASE_SCALE,
+            theme: frameSides === 4 ? DICE_D4_THEME : undefined,
+          })
         }
         return boxPromise
+      }
+
+      function installD4LabelScale() {
+        if (window.__d4LabelScaleInstalled) return
+        const descriptor = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, 'font')
+        if (!descriptor?.set || !descriptor?.get) return
+        window.__d4LabelScaleInstalled = true
+        Object.defineProperty(CanvasRenderingContext2D.prototype, 'font', {
+          configurable: true,
+          enumerable: descriptor.enumerable,
+          get() {
+            return descriptor.get.call(this)
+          },
+          set(value) {
+            const scaled =
+              typeof value === 'string'
+                ? value.replace(/([0-9]+(?:\.[0-9]+)?)pt\b/, (_, size) => {
+                    const next = Math.max(1, Number(size) * DICE_D4_LABEL_SCALE)
+                    return `${next.toFixed(2)}pt`
+                  })
+                : value
+            descriptor.set.call(this, scaled)
+          },
+        })
       }
 
       function clampQty(qty) {
@@ -118,14 +142,12 @@
                 type: 'dice-box-d20-result',
                 requestId,
                 value: values[0],
-                traceFrames: [], // inert — removed in T-P2-401
                 ...(fallback ? { fallback: true } : {}),
               }
             : {
                 type: 'dice-box-roll-result',
                 requestId,
                 values,
-                traceFrames: [], // inert — removed in T-P2-401
                 ...(fallback ? { fallback: true } : {}),
               }
         window.parent.postMessage(payload, ORIGIN)
@@ -176,11 +198,6 @@
         }
         if (data?.type === 'roll-dice') {
           void handleRoll('dice', data.requestId, data.qty, data.sides, data.values)
-          return
-        }
-        if (data?.type === 'dice-trace-frame') {
-          // Inert: multi-end replay-frame ingestion is gone (AC0). Symbol kept so
-          // the React side needs no change; the listener is removed in T-P2-401.
           return
         }
       })

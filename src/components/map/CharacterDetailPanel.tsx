@@ -10,6 +10,7 @@ interface CharacterDetailPanelProps {
   mapId: string
   updateToken: (mapId: string, tokenId: string, patch: Partial<Token>) => void
   updateChar: (charId: string, patch: Partial<Character>) => void
+  isDM?: boolean
   onClose: () => void
 }
 
@@ -19,6 +20,7 @@ export default function CharacterDetailPanel({
   mapId,
   updateToken,
   updateChar,
+  isDM = false,
   onClose,
 }: CharacterDetailPanelProps) {
   const hpPct =
@@ -26,6 +28,7 @@ export default function CharacterDetailPanel({
   const tempHp = character.tempHp ?? 0
 
   const setHp = (hp: number, maxHp = character.maxHp) => {
+    if (!isDM) return
     const nextHp = Math.max(0, Math.min(maxHp, hp))
     updateChar(character.id, { currentHp: nextHp, maxHp })
     updateToken(mapId, token.id, { hp: nextHp, maxHp })
@@ -73,21 +76,29 @@ export default function CharacterDetailPanel({
             生命值
           </div>
           <div className="mb-2 flex items-center gap-1">
-            <input
-              type="number"
-              min={0}
-              value={character.currentHp}
-              onChange={(e) => setHp(Number(e.target.value) || 0)}
-              className="w-20 rounded border border-white/10 bg-void-950/70 px-1 py-0.5 text-center text-xs text-slate-100 outline-none focus:border-arcane-500"
-            />
-            <span className="text-xs text-slate-500">/</span>
-            <input
-              type="number"
-              min={1}
-              value={character.maxHp}
-              onChange={(e) => setHp(character.currentHp, Math.max(1, Number(e.target.value) || 1))}
-              className="w-20 rounded border border-white/10 bg-void-950/70 px-1 py-0.5 text-center text-xs text-slate-100 outline-none focus:border-arcane-500"
-            />
+            {isDM ? (
+              <>
+                <input
+                  type="number"
+                  min={0}
+                  value={character.currentHp}
+                  onChange={(e) => setHp(Number(e.target.value) || 0)}
+                  className="w-20 rounded border border-white/10 bg-void-950/70 px-1 py-0.5 text-center text-xs text-slate-100 outline-none focus:border-arcane-500"
+                />
+                <span className="text-xs text-slate-500">/</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={character.maxHp}
+                  onChange={(e) => setHp(character.currentHp, Math.max(1, Number(e.target.value) || 1))}
+                  className="w-20 rounded border border-white/10 bg-void-950/70 px-1 py-0.5 text-center text-xs text-slate-100 outline-none focus:border-arcane-500"
+                />
+              </>
+            ) : (
+              <span className="rounded border border-white/10 bg-void-950/50 px-2 py-1 text-sm font-semibold tabular-nums text-slate-100">
+                {character.currentHp} / {character.maxHp}
+              </span>
+            )}
             {tempHp > 0 && (
               <span className="ml-auto rounded bg-amber-400/15 px-2 py-0.5 text-xs font-semibold text-amber-200">
                 临时 {tempHp}
