@@ -181,10 +181,12 @@ interface SharedPlayerActionState {
   mapId: string
   sourceMode: 'player'
   status: 'pending' | 'done'
-  type: 'end-turn' | 'attack-token' | 'qi-reduce-cooldown'
+  type: 'end-turn' | 'attack-token' | 'aoe-attack' | 'qi-reduce-cooldown'
   actorTokenId: string
   characterId: string
   targetTokenId?: string
+  targetCell?: GridCell
+  aoeRectRotation?: number
   skillId?: string
   round: number
   initiativeIndex: number
@@ -1432,14 +1434,21 @@ export default function MapsPage() {
     return pixelToCell(casterToken.x, casterToken.y, activeMap)
   }, [activeMap, targeting])
 
-  const aoeOrientFromCell = (aoe: SkillAoeTargeting, casterCell: GridCell, anchorCell: GridCell): GridCell => {
-    if (aoe.shape !== 'rect' || targeting?.skill.skillTreeId !== 'arrowStorm') return casterCell
+  const aoeOrientFromCell = (
+    aoe: SkillAoeTargeting,
+    casterCell: GridCell,
+    anchorCell: GridCell,
+    opts?: { skillTreeId?: string; rectRotation?: number },
+  ): GridCell => {
+    const skillTreeId = opts?.skillTreeId ?? targeting?.skill.skillTreeId
+    if (aoe.shape !== 'rect' || skillTreeId !== 'arrowStorm') return casterCell
+    const rotation = opts?.rectRotation ?? aoeRectRotation
     const dir = [
       { col: 0, row: -1 },
       { col: 1, row: 0 },
       { col: 0, row: 1 },
       { col: -1, row: 0 },
-    ][((aoeRectRotation % 4) + 4) % 4]
+    ][((rotation % 4) + 4) % 4]
     return { col: anchorCell.col - dir.col, row: anchorCell.row - dir.row }
   }
 
@@ -2926,10 +2935,23 @@ export default function MapsPage() {
     }
   }
 
-  const resolveAoeAttack = async (clickedCell: GridCell) => {
+  const resolveAoeAttack = async (
+    clickedCell: GridCell,
+    opts?: {
+      targetingOverride?: {
+        casterId: string
+        skill: CombatSkill
+        doubleArrow?: boolean
+        aoe: SkillAoeTargeting
+        waiveAp?: boolean
+      }
+      rectRotationOverride?: number
+    },
+  ) => {
     if (resolvingAoeRef.current) return
-    if (!targeting?.aoe || !activeMap) return
-    const { skill, casterId, aoe } = targeting
+    const aoeTargeting = opts?.targetingOverride ?? targeting
+    if (!aoeTargeting?.aoe || !activeMap) return
+    const { skill, casterId, aoe } = aoeTargeting
     const caster = characters.find((c) => c.id === casterId)
     const casterToken = activeMap.tokens.find((t) => t.characterId === casterId)
     if (!caster || !casterToken) return
@@ -2948,7 +2970,14 @@ export default function MapsPage() {
       return
     }
 
-    const cells = cellsForAoe(aoe, aoeOrientFromCell(aoe, casterCell, anchorCell), anchorCell)
+    const cells = cellsForAoe(
+      aoe,
+      aoeOrientFromCell(aoe, casterCell, anchorCell, {
+        skillTreeId: skill.skillTreeId,
+        rectRotation: opts?.rectRotationOverride,
+      }),
+      anchorCell,
+    )
     resolvingAoeRef.current = true
     setTargeting(null)
     setAoePreviewCell(null)
@@ -3013,6 +3042,12 @@ export default function MapsPage() {
         skipUseSkill: true,
         silent: true,
         aoeTargetCount: targets.length,
+        targetingOverride: {
+          casterId,
+          skill,
+          doubleArrow: aoeTargeting.doubleArrow,
+          waiveAp: aoeTargeting.waiveAp,
+        },
         presetDamageValues: sharedValues,
         presetFeatureLabelParts: sharedLabelParts,
       })
@@ -3033,7 +3068,7 @@ export default function MapsPage() {
       selfCooldownReduction = Math.max(selfCooldownReduction, 1)
     }
 
-    const waiveAp = !!targeting?.waiveAp || !!caster?.combatBuffs?.galeComboReady
+    const waiveAp = !!aoeTargeting.waiveAp || !!caster?.combatBuffs?.galeComboReady
     useSkillStore(casterId, skill.id, waiveAp ? { waiveAp: true } : undefined)
     pushApLog(caster, waiveAp ? 0 : skill.apCost, `释放 ${skill.name}`, `${targets.length} 名目标，覆盖 ${cells.length} 格`)
     applySkillCooldownReduction(casterId, skill.id, selfCooldownReduction)
@@ -3693,11 +3728,19 @@ export default function MapsPage() {
 
   const handleAoeConfirm = (cell: GridCell) => {
     if (!targeting?.aoe || !aoeCasterCell) return
+    const requestPlayerAoe = (targetCell: GridCell) => {
+      if (isDM || !sendPlayerAoeAttackRequest(targetCell)) return false
+      setTargeting(null)
+      setAoePreviewCell(null)
+      return true
+    }
     if (isSelfOriginCircleAoe(targeting.aoe)) {
+      if (requestPlayerAoe(aoeCasterCell)) return
       void resolveAoeAttack(aoeCasterCell)
       return
     }
     if (!aoeHighlight?.valid) return
+    if (requestPlayerAoe(cell)) return
     void resolveAoeAttack(cell)
   }
 
@@ -3713,6 +3756,11 @@ export default function MapsPage() {
       if (isSelfOriginCircleAoe(targeting.aoe)) {
         const casterToken = activeMap.tokens.find((t) => t.characterId === targeting.casterId)
         if (casterToken && tokenId === casterToken.id) {
+          if (!isDM && sendPlayerAoeAttackRequest(aoeCasterCell)) {
+            setTargeting(null)
+            setAoePreviewCell(null)
+            return
+          }
           resolveAoeAttack(aoeCasterCell)
           return
         }
@@ -3829,7 +3877,7 @@ export default function MapsPage() {
           }
         }
         */
-        if (!isDM && isBasicShot(targeting.skill) && sendPlayerAttackTokenRequest(tok, targeting.skill)) {
+        if (!isDM && sendPlayerAttackTokenRequest(tok, targeting.skill)) {
           setTargeting(null)
           setAoePreviewCell(null)
           return
@@ -4756,7 +4804,7 @@ export default function MapsPage() {
       const actor = useCharacterStore.getState().characters.find((c) => c.id === action.characterId)
       const skill = actor?.combatSkills.find((s) => s.id === action.skillId)
       const target = activeMap.tokens.find((t) => t.id === action.targetTokenId)
-      if (!actor || !skill || !target || !isBasicShot(skill) || !isTokenAlive(target, useCharacterStore.getState().characters)) {
+      if (!actor || !skill || getSkillAoeTargeting(skill) || !target || !isTokenAlive(target, useCharacterStore.getState().characters)) {
         acknowledgePlayerAction(action, 'rejected', 'invalid-attack')
         completePlayerActionRequest(action)
         return
@@ -4775,6 +4823,37 @@ export default function MapsPage() {
           doubleArrow,
           waiveAp: waiveAp || undefined,
         },
+      })
+      completePlayerActionRequest(action)
+      acknowledgePlayerAction(action, 'accepted')
+      return
+    }
+
+    if (action.type === 'aoe-attack') {
+      const actor = useCharacterStore.getState().characters.find((c) => c.id === action.characterId)
+      const skill = actor?.combatSkills.find((s) => s.id === action.skillId)
+      const aoe = skill ? getSkillAoeTargeting(skill) : null
+      if (!actor || !skill || !aoe || !action.targetCell) {
+        acknowledgePlayerAction(action, 'rejected', 'invalid-aoe-attack')
+        completePlayerActionRequest(action)
+        return
+      }
+      const waiveAp = !!actor.combatBuffs?.galeComboReady
+      if (!waiveAp && actor.currentAP < skill.apCost) {
+        acknowledgePlayerAction(action, 'rejected', 'insufficient-ap')
+        completePlayerActionRequest(action)
+        return
+      }
+      const doubleArrow = canUseDoubleArrow(actor, skill) && !!actor.combatBuffs?.doubleArrowReady
+      await resolveAoeAttack(action.targetCell, {
+        targetingOverride: {
+          casterId: actor.id,
+          skill,
+          doubleArrow,
+          aoe,
+          waiveAp: waiveAp || undefined,
+        },
+        rectRotationOverride: action.aoeRectRotation ?? 0,
       })
       completePlayerActionRequest(action)
       acknowledgePlayerAction(action, 'accepted')
@@ -4851,7 +4930,7 @@ export default function MapsPage() {
 
   const sendPlayerAttackTokenRequest = (targetToken: Token, skill: CombatSkill) => {
     if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
-    if (!isBasicShot(skill)) return false
+    if (getSkillAoeTargeting(skill)) return false
     const seq = playerActionSeqRef.current + 1
     playerActionSeqRef.current = seq
     const action: SharedPlayerActionState = {
@@ -4870,6 +4949,32 @@ export default function MapsPage() {
       updatedAt: Date.now(),
     }
     setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 使用 ${skill.name}` })
+    void saveSharedResource<SharedPlayerActionState>('player-action', action)
+    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
+    return true
+  }
+
+  const sendPlayerAoeAttackRequest = (targetCell: GridCell) => {
+    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken || !targeting?.aoe) return false
+    const seq = playerActionSeqRef.current + 1
+    playerActionSeqRef.current = seq
+    const action: SharedPlayerActionState = {
+      id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
+      mapId: activeMap.id,
+      sourceMode: 'player',
+      status: 'pending',
+      type: 'aoe-attack',
+      actorTokenId: currentInitiativeToken.id,
+      characterId: turnCharacter.id,
+      skillId: targeting.skill.id,
+      targetCell,
+      aoeRectRotation,
+      round,
+      initiativeIndex,
+      seq,
+      updatedAt: Date.now(),
+    }
+    setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 使用 ${targeting.skill.name}` })
     void saveSharedResource<SharedPlayerActionState>('player-action', action)
     void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
     return true
