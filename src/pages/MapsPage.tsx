@@ -4552,6 +4552,29 @@ export default function MapsPage() {
         const latestEnemy = latestMap?.tokens.find((t) => t.id === enemy.id)
         if (apLeft > 0 && latestMap && latestEnemy && isTokenAlive(latestEnemy, useCharacterStore.getState().characters)) {
           const nextResult = planEnemyTurn(latestMap, latestEnemy, useCharacterStore.getState().characters, apLeft, { round })
+          if (nextResult.newPosition) {
+            pushTimer(async () => {
+              const moveApSpent = nextResult.moveApSpent ?? 1
+              if (!spendEnemyAp(enemy.id, moveApSpent)) {
+                pushTimer(advanceEnemyIfCurrent, 300)
+                return
+              }
+              await resolveOpportunityAttacksForMove(latestEnemy, nextResult.newPosition!)
+              const stillAliveMap = useMapStore.getState().maps.find((m) => m.id === activeMap.id)
+              const stillAliveEnemy = stillAliveMap?.tokens.find((t) => t.id === enemy.id) ?? latestEnemy
+              if (!isTokenAlive(stillAliveEnemy, useCharacterStore.getState().characters)) {
+                pushTimer(advanceEnemyIfCurrent, DICE_ROLL_MS + 200)
+                return
+              }
+              updateToken(activeMap.id, enemy.id, { x: nextResult.newPosition!.x, y: nextResult.newPosition!.y })
+              pushCombatLog(
+                `${enemy.label} 花费 ${moveApSpent} AP：继续移动。剩余 AP ${getEnemyApState(enemy.id).current}/2`,
+                'turn',
+              )
+              pushTimer(advanceEnemyIfCurrent, nextResult.attacked ? TOKEN_MOVE_MS : 300)
+            }, DICE_ROLL_MS + 5000)
+            return
+          }
           if (nextResult.attacked && !nextResult.newPosition && spendEnemyAp(enemy.id, 1)) {
             pushTimer(() => {
               const nextRemainingAp = getEnemyApState(enemy.id).current
