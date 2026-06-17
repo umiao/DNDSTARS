@@ -181,9 +181,11 @@ interface SharedPlayerActionState {
   mapId: string
   sourceMode: 'player'
   status: 'pending' | 'done'
-  type: 'end-turn'
+  type: 'end-turn' | 'attack-token'
   actorTokenId: string
   characterId: string
+  targetTokenId?: string
+  skillId?: string
   round: number
   initiativeIndex: number
   seq: number
@@ -2113,13 +2115,20 @@ export default function MapsPage() {
       silent?: boolean
       aoeTargetCount?: number
       skillOverride?: CombatSkill
+      targetingOverride?: {
+        casterId: string
+        skill: CombatSkill
+        doubleArrow?: boolean
+        waiveAp?: boolean
+      }
       presetDamageValues?: number[]
       presetFeatureLabelParts?: string[]
     },
   ): Promise<AttackResolveResult | undefined> => {
-    if (!targeting || !activeMap) return
-    const { casterId, doubleArrow } = targeting
-    const skill = opts?.skillOverride ?? targeting.skill
+    const attackTargeting = opts?.targetingOverride ?? targeting
+    if (!attackTargeting || !activeMap) return
+    const { casterId, doubleArrow } = attackTargeting
+    const skill = opts?.skillOverride ?? attackTargeting.skill
     const caster = characters.find((c) => c.id === casterId)
     const casterToken = activeMap.tokens.find((t) => t.characterId === casterId)
     const targetChar = token.characterId
@@ -2386,7 +2395,7 @@ export default function MapsPage() {
       }
 
       const comboFist = findClassTrait(caster, 'comboFist')
-      const waivedApAttack = !!targeting?.waiveAp || !!caster.combatBuffs?.galeComboReady
+      const waivedApAttack = !!attackTargeting.waiveAp || !!caster.combatBuffs?.galeComboReady
       if (hit && comboFist && waivedApAttack) {
         const extraValues = await rollDiceBoxValues(comboFist.level, 6, `${skill.name} 连续拳额外伤害`, token.label)
         values.push(...extraValues)
@@ -2845,7 +2854,7 @@ export default function MapsPage() {
     }
 
     if (!opts?.skipUseSkill) {
-      const waiveAp = !!targeting?.waiveAp || !!caster?.combatBuffs?.galeComboReady
+      const waiveAp = !!attackTargeting.waiveAp || !!caster?.combatBuffs?.galeComboReady
       useSkillStore(casterId, skill.id, waiveAp ? { waiveAp: true } : undefined)
       pushApLog(caster, waiveAp ? 0 : skill.apCost, `使用 ${skill.name}`, `目标 ${token.label}`)
       applySkillCooldownReduction(casterId, skill.id, selfCooldownReduction)
@@ -3820,6 +3829,11 @@ export default function MapsPage() {
           }
         }
         */
+        if (!isDM && isBasicShot(targeting.skill) && sendPlayerAttackTokenRequest(tok, targeting.skill)) {
+          setTargeting(null)
+          setAoePreviewCell(null)
+          return
+        }
         void resolveAttack(tok)
         return
       }
@@ -4717,15 +4731,14 @@ export default function MapsPage() {
     })
   }
 
-  const handlePlayerActionRequest = (action: SharedPlayerActionState) => {
+  const handlePlayerActionRequest = async (action: SharedPlayerActionState) => {
     if (!isDM || !activeMap || action.mapId !== activeMap.id || action.status !== 'pending') return
     if (seenPlayerActionIdsRef.current.has(action.id)) return
     seenPlayerActionIdsRef.current.add(action.id)
 
     const current = initiativeOrderRef.current[initiativeIndexRef.current]
-    const valid =
+    const validTurn =
       combatActive &&
-      action.type === 'end-turn' &&
       action.round === round &&
       action.initiativeIndex === initiativeIndexRef.current &&
       current?.tokenId === action.actorTokenId &&
@@ -4733,8 +4746,43 @@ export default function MapsPage() {
       currentInitiativeToken?.type === 'player' &&
       currentInitiativeToken.characterId === action.characterId
 
-    if (!valid) {
+    if (!validTurn) {
       acknowledgePlayerAction(action, 'rejected', 'stale-turn')
+      completePlayerActionRequest(action)
+      return
+    }
+
+    if (action.type === 'attack-token') {
+      const actor = useCharacterStore.getState().characters.find((c) => c.id === action.characterId)
+      const skill = actor?.combatSkills.find((s) => s.id === action.skillId)
+      const target = activeMap.tokens.find((t) => t.id === action.targetTokenId)
+      if (!actor || !skill || !target || !isBasicShot(skill) || !isTokenAlive(target, useCharacterStore.getState().characters)) {
+        acknowledgePlayerAction(action, 'rejected', 'invalid-attack')
+        completePlayerActionRequest(action)
+        return
+      }
+      const waiveAp = !!actor.combatBuffs?.galeComboReady
+      if (!waiveAp && actor.currentAP < skill.apCost) {
+        acknowledgePlayerAction(action, 'rejected', 'insufficient-ap')
+        completePlayerActionRequest(action)
+        return
+      }
+      const doubleArrow = canUseDoubleArrow(actor, skill) && !!actor.combatBuffs?.doubleArrowReady
+      await resolveAttack(target, {
+        targetingOverride: {
+          casterId: actor.id,
+          skill,
+          doubleArrow,
+          waiveAp: waiveAp || undefined,
+        },
+      })
+      completePlayerActionRequest(action)
+      acknowledgePlayerAction(action, 'accepted')
+      return
+    }
+
+    if (action.type !== 'end-turn') {
+      acknowledgePlayerAction(action, 'rejected', 'unsupported-action')
       completePlayerActionRequest(action)
       return
     }
@@ -4771,6 +4819,32 @@ export default function MapsPage() {
       updatedAt: Date.now(),
     }
     setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 结束回合` })
+    void saveSharedResource<SharedPlayerActionState>('player-action', action)
+    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
+    return true
+  }
+
+  const sendPlayerAttackTokenRequest = (targetToken: Token, skill: CombatSkill) => {
+    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
+    if (!isBasicShot(skill)) return false
+    const seq = playerActionSeqRef.current + 1
+    playerActionSeqRef.current = seq
+    const action: SharedPlayerActionState = {
+      id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
+      mapId: activeMap.id,
+      sourceMode: 'player',
+      status: 'pending',
+      type: 'attack-token',
+      actorTokenId: currentInitiativeToken.id,
+      characterId: turnCharacter.id,
+      targetTokenId: targetToken.id,
+      skillId: skill.id,
+      round,
+      initiativeIndex,
+      seq,
+      updatedAt: Date.now(),
+    }
+    setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 使用 ${skill.name}` })
     void saveSharedResource<SharedPlayerActionState>('player-action', action)
     void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
     return true
