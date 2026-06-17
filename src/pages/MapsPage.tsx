@@ -175,6 +175,31 @@ interface SharedDodgeState {
   updatedAt: number
 }
 
+interface SharedPlayerActionState {
+  id: string
+  mapId: string
+  sourceMode: 'player'
+  status: 'pending' | 'done'
+  type: 'end-turn'
+  actorTokenId: string
+  characterId: string
+  round: number
+  initiativeIndex: number
+  seq: number
+  updatedAt: number
+}
+
+interface SharedPlayerActionAckState {
+  id: string
+  mapId: string
+  actionId: string
+  status: 'accepted' | 'rejected'
+  reason?: string
+  round: number
+  initiativeIndex: number
+  updatedAt: number
+}
+
 interface SharedDiceState {
   id: string
   mapId: string
@@ -533,6 +558,10 @@ export default function MapsPage() {
     result: EnemyTurnResult
     targetChar: Character
   } | null>(null)
+  const [pendingPlayerAction, setPendingPlayerAction] = useState<{
+    id: string
+    label: string
+  } | null>(null)
   const [showMoveRange, setShowMoveRange] = useState(false)
   const [disengagedCharIds, setDisengagedCharIds] = useState<Set<string>>(() => new Set())
   const enemyAppliedKeysRef = useRef(new Set<string>())
@@ -544,6 +573,9 @@ export default function MapsPage() {
     onComplete: () => void
   } | null>(null)
   const suppressedDodgePromptIdsRef = useRef(new Set<string>())
+  const playerActionSeqRef = useRef(0)
+  const seenPlayerActionIdsRef = useRef(new Set<string>())
+  const seenPlayerActionAckIdsRef = useRef(new Set<string>())
   const seenSharedDiceIdsRef = useRef(new Set<string>())
   const seenDiceStreamEventIdsRef = useRef(new Set<string>())
   // T-P2-398 (398-A): dedup roll-request by requestId (AC3) — same requestId
@@ -1224,7 +1256,7 @@ export default function MapsPage() {
     turnCharacter.currentHp > 0 &&
     !!currentInitiativeToken &&
     isTokenAlive(currentInitiativeToken, characters) &&
-    (isDM || turnCharacter.id === playerChar?.id)
+    (isDM || (!pendingPlayerAction && turnCharacter.id === playerChar?.id))
 
   const myPlayerToken =
     activeMap && turnCharacter
@@ -4617,6 +4649,145 @@ export default function MapsPage() {
     }, 350)
   }
 
+  const acknowledgePlayerAction = (
+    action: SharedPlayerActionState,
+    status: SharedPlayerActionAckState['status'],
+    reason?: string,
+  ) => {
+    if (!activeMap || mode !== 'dm') return
+    const ack: SharedPlayerActionAckState = {
+      id: `${action.id}:ack:${Date.now()}`,
+      mapId: activeMap.id,
+      actionId: action.id,
+      status,
+      reason,
+      round,
+      initiativeIndex,
+      updatedAt: Date.now(),
+    }
+    void saveSharedResource('player-action-ack', ack)
+    void publishSharedEvent<SharedPlayerActionAckState>('player-action-dm-to-player', ack)
+  }
+
+  const completePlayerActionRequest = (action: SharedPlayerActionState) => {
+    void saveSharedResource<SharedPlayerActionState>('player-action', {
+      ...action,
+      status: 'done',
+      updatedAt: Date.now(),
+    })
+  }
+
+  const handlePlayerActionRequest = (action: SharedPlayerActionState) => {
+    if (!isDM || !activeMap || action.mapId !== activeMap.id || action.status !== 'pending') return
+    if (seenPlayerActionIdsRef.current.has(action.id)) return
+    seenPlayerActionIdsRef.current.add(action.id)
+
+    const current = initiativeOrderRef.current[initiativeIndexRef.current]
+    const valid =
+      combatActive &&
+      action.type === 'end-turn' &&
+      action.round === round &&
+      action.initiativeIndex === initiativeIndexRef.current &&
+      current?.tokenId === action.actorTokenId &&
+      currentInitiativeToken?.id === action.actorTokenId &&
+      currentInitiativeToken?.type === 'player' &&
+      currentInitiativeToken.characterId === action.characterId
+
+    if (!valid) {
+      acknowledgePlayerAction(action, 'rejected', 'stale-turn')
+      completePlayerActionRequest(action)
+      return
+    }
+
+    for (const key of Object.keys(multiStrikeHitsRef.current)) {
+      if (key.startsWith(`${action.characterId}:`)) delete multiStrikeHitsRef.current[key]
+    }
+    setDisengagedCharIds((prev) => {
+      if (!prev.has(action.characterId)) return prev
+      const next = new Set(prev)
+      next.delete(action.characterId)
+      return next
+    })
+    completePlayerActionRequest(action)
+    acknowledgePlayerAction(action, 'accepted')
+    advanceInitiative()
+  }
+
+  const sendPlayerEndTurnRequest = () => {
+    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
+    const seq = playerActionSeqRef.current + 1
+    playerActionSeqRef.current = seq
+    const action: SharedPlayerActionState = {
+      id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
+      mapId: activeMap.id,
+      sourceMode: 'player',
+      status: 'pending',
+      type: 'end-turn',
+      actorTokenId: currentInitiativeToken.id,
+      characterId: turnCharacter.id,
+      round,
+      initiativeIndex,
+      seq,
+      updatedAt: Date.now(),
+    }
+    setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 结束回合` })
+    void saveSharedResource<SharedPlayerActionState>('player-action', action)
+    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
+    return true
+  }
+
+  useEffect(() => {
+    if (!isDM || !activeMap) return
+    const unsubscribe = subscribeSharedEvent<SharedPlayerActionState>(
+      'player-action-player-to-dm',
+      handlePlayerActionRequest,
+    )
+    let cancelled = false
+    const load = async () => {
+      const action = await loadSharedResource<SharedPlayerActionState>('player-action')
+      if (!cancelled && action) handlePlayerActionRequest(action)
+    }
+    void load()
+    const timer = window.setInterval(load, 500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      unsubscribe()
+    }
+  }, [isDM, activeMap?.id, combatActive, round, currentInitiativeToken?.id])
+
+  useEffect(() => {
+    if (mode !== 'player' || !activeMap) return
+    const applyAck = (ack: SharedPlayerActionAckState | null) => {
+      if (!ack || ack.mapId !== activeMap.id) return
+      if (seenPlayerActionAckIdsRef.current.has(ack.id)) return
+      seenPlayerActionAckIdsRef.current.add(ack.id)
+      setPendingPlayerAction((current) => {
+        if (!current || current.id !== ack.actionId) return current
+        window.setTimeout(() => {
+          setPendingPlayerAction((latest) => (latest?.id === ack.actionId ? null : latest))
+        }, 100)
+        return current
+      })
+    }
+    const unsubscribe = subscribeSharedEvent<SharedPlayerActionAckState>(
+      'player-action-dm-to-player',
+      applyAck,
+    )
+    let cancelled = false
+    const load = async () => {
+      const ack = await loadSharedResource<SharedPlayerActionAckState>('player-action-ack')
+      if (!cancelled) applyAck(ack)
+    }
+    void load()
+    const timer = window.setInterval(load, 500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      unsubscribe()
+    }
+  }, [mode, activeMap?.id])
+
   useEffect(() => {
     if (!combatActive || !activeMap || initiativeOrder.length === 0) return
     if (!isDM) return
@@ -4717,7 +4888,11 @@ export default function MapsPage() {
         next.delete(turnCharacter.id)
         return next
       })
-      advanceInitiative()
+      if (isDM) {
+        advanceInitiative()
+      } else {
+        sendPlayerEndTurnRequest()
+      }
       return
     }
     if (activeChar) endTurn(activeChar.id)
@@ -5234,7 +5409,7 @@ export default function MapsPage() {
               {!isDM && (
                 <button
                   onClick={handlePlayerEndTurn}
-                  disabled={!canControlPlayerTurn || !turnCharacter}
+                  disabled={!!pendingPlayerAction || !canControlPlayerTurn || !turnCharacter}
                   className={[
                     'flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors',
                     activeChar
@@ -5670,6 +5845,7 @@ export default function MapsPage() {
                 <QiIndicator charClass={activeChar.charClass} level={activeChar.level} qi={activeChar.qi} compact />
                 <button
                   onClick={handlePlayerEndTurn}
+                  disabled={!!pendingPlayerAction}
                   className="ml-auto flex items-center gap-1 rounded-lg bg-arcane-500/20 px-2 py-1 text-xs font-medium text-arcane-100 hover:bg-arcane-500/30"
                   title="结束回合：冷却 -1、行动点回满"
                 >
