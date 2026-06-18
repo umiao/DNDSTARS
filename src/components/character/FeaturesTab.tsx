@@ -22,7 +22,6 @@ import TraitChoicePanel from './TraitChoicePanel'
 const ACTIVE_FEATURES = new Set<ClassFeatureKey>([
   'trackingArrow',
   'shadowVeil',
-  'swiftShot',
   'stillWater',
   'finale',
   'illusionDance',
@@ -313,20 +312,16 @@ export default function FeaturesTab({
                     <button
                       type="button"
                       disabled={
-                        t.featureKey === 'swiftShot'
+                        t.featureKey === 'finale' && c.combatBuffs?.finaleReady
                           ? false
-                          : (t.featureKey === 'finale' && c.combatBuffs?.finaleReady
-                              ? false
-                              : c.currentAP < (t.featureKey === 'finale' ? 2 : 1) || (t.maxUses > 0 && t.uses <= 0))
+                          : c.currentAP < (t.featureKey === 'finale' ? 2 : 1) || (t.maxUses > 0 && t.uses <= 0)
                       }
                       onClick={() => onActivateFeature?.(t.featureKey!)}
                       className="mt-3 w-full rounded-lg bg-fuchsia-500/20 px-3 py-2 text-sm font-semibold text-fuchsia-100 hover:bg-fuchsia-500/30 disabled:cursor-not-allowed disabled:bg-white/5 disabled:text-slate-600"
                     >
                       {t.featureKey === 'finale' && c.combatBuffs?.finaleReady
                         ? '曲终待触发 · 点击取消'
-                        : t.featureKey === 'swiftShot'
-                          ? '迅捷射击：免费移动'
-                          : `激活（${t.featureKey === 'finale' ? 2 : 1} AP${t.maxUses > 0 ? ` · ${t.uses}/${t.maxUses}` : ''}）`}
+                        : `激活（${t.featureKey === 'finale' ? 2 : 1} AP${t.maxUses > 0 ? ` · ${t.uses}/${t.maxUses}` : ''}）`}
                     </button>
                   )}
 

@@ -26,7 +26,7 @@ import {
   type MetaChoiceKey,
   type TraitChoiceOption,
 } from '../lib/traitRegistry'
-import { beginCalmMindTurn, initCalmMindForCombat, isCalmMindActive, triggerOutOfBreath, tickOutOfBreathOnEndTurn } from '../lib/calmMind'
+import { beginCalmMindTurn, calmBreathState, initCalmMindForCombat, isCalmMindActive, triggerOutOfBreath, tickOutOfBreathOnEndTurn } from '../lib/calmMind'
 import { syncArcherCombatSkills } from '../lib/skillTreeSync'
 import { ensureDefaultEquipment, isMagicDamageSkill, refreshKnownEquipment, syncCombatDerivedStats } from '../lib/combatStats'
 
@@ -50,8 +50,24 @@ interface SharedCharactersState {
   updatedAt?: number
 }
 
-function applyStillWatersHealingOnBreathShift(_before: Character, after: Character): Character {
-  return after
+function rollD4(count: number): number {
+  let total = 0
+  for (let i = 0; i < count; i += 1) total += 1 + Math.floor(Math.random() * 4)
+  return total
+}
+
+function applyStillWatersHealingOnBreathShift(before: Character, after: Character): Character {
+  const trait = findClassTrait(after, 'swiftShot')
+  if (!trait || after.currentHp <= 0) return after
+  const beforeState = calmBreathState(before)
+  const afterState = calmBreathState(after)
+  const switched =
+    (beforeState === 'calm' && afterState === 'outOfBreath') ||
+    (beforeState === 'outOfBreath' && afterState === 'calm')
+  if (!switched) return after
+  const heal = rollD4(Math.max(1, trait.level))
+  if (heal <= 0) return after
+  return { ...after, currentHp: Math.min(after.maxHp, after.currentHp + heal) }
 }
 
 function mergePlayerWritableCharacter(local: Character, shared: Character): Character {

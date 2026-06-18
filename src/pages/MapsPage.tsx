@@ -3299,25 +3299,6 @@ export default function MapsPage() {
       pushApLog(turnCharacter, 1, '激活影遁之术', `${target.label} 印记 -2，本回合攻击 +1D6`)
       return
     }
-    if (key === 'swiftShot') {
-      const trait = findClassTrait(turnCharacter, 'swiftShot')
-      if (!trait) return
-      const active = (turnCharacter.combatBuffs?.freeMoveFeet ?? 0) > 0
-      const feet = 10 + (trait.level - 1) * 5
-      updateChar(turnCharacter.id, {
-        combatBuffs: {
-          ...turnCharacter.combatBuffs,
-          freeMoveFeet: active ? undefined : feet,
-        },
-      })
-      pushCombatLog(
-        active
-          ? `${turnCharacter.name} 取消迅捷射击免费移动`
-          : `${turnCharacter.name} 激活迅捷射击：可免费移动至多 ${feet} 尺，不消耗 AP`,
-        'turn',
-      )
-      return
-    }
     if (key === 'stillWater') {
       const trait = findClassTrait(turnCharacter, 'stillWater')
       if (!trait) return
@@ -4282,7 +4263,7 @@ export default function MapsPage() {
           result.saveDC ?? DEFAULT_AOE_SAVE_DC,
           () => {
             if (!spendAP(targetChar.id, 1)) return false
-            pushApLog(targetChar, 1, '稳定心神', '抵消敏捷豁免后仍会受到的伤害')
+            pushApLog(targetChar, 1, '残影脱身', '抵消敏捷豁免后仍会受到的伤害')
             return useClassFeature(targetChar.id, 'stableMind')
           },
           saveD20,

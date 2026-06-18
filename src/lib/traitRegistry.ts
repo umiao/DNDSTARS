@@ -168,7 +168,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
   },
   {
     key: 'stableMind',
-    name: '稳定心神',
+    name: '残影脱身',
     usage: 'perLongRest',
     description:
       '当你进行敏捷豁免成功，但仍会受到伤害后，可以消耗 1 AP 取消本次攻击受到的所有伤害。每提升 1 级特性，长休可额外使用 1 次。',
@@ -298,11 +298,11 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
   },
   {
     key: 'swiftShot',
-    name: '迅捷射击',
-    usage: 'unlimited',
+    name: '波澜不惊',
+    usage: 'passive',
     description:
-      '在你的回合内，你可以无需消耗 AP 移动至多 {range} 尺而不失去静心状态。每提升 1 级，额外获得 5 尺移动。',
-    rangeAtRank: (r) => 10 + (r - 1) * 5,
+      '当战斗开始时，默认处于静心状态。每当你切换静心/气喘状态时，回复 {dice}D4 点生命值。每提升 1 级，额外回复 1D4 点生命值。',
+    diceAtRank: diceEqualsRank,
   },
   {
     key: 'huntingCombo',
@@ -474,7 +474,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '稳弦',
     usage: 'passive',
     deprecated: true,
-    description: '（已废弃）由「稳定心神」取代。'
+    description: '（已废弃）由「残影脱身」取代。'
   },
   {
     key: 'swiftStep',
@@ -585,7 +585,7 @@ export const TRAIT_CHOICE_GROUPS: TraitChoiceGroup[] = [
   {
     id: 'archer-lv3',
     title: '弓手 · LV3 职业特性',
-    hint: '请选择 1 项：稳定心神、鹰眼。',
+    hint: '请选择 1 项：残影脱身、鹰眼。',
     minLevel: 3,
     pickCount: 1,
     applies: (c) => isBaseArcher(c.charClass),
@@ -658,7 +658,7 @@ export const TRAIT_CHOICE_GROUPS: TraitChoiceGroup[] = [
   {
     id: 'windrunner-lv30',
     title: '逐风者 · LV30 职业特性',
-    hint: '请选择 1 项：迅捷射击、狩猎连击、迅捷回溯。',
+    hint: '请选择 1 项：波澜不惊、狩猎连击、迅捷回溯。',
     minLevel: 30,
     pickCount: 1,
     applies: (c) => isWindrunner(c.charClass),

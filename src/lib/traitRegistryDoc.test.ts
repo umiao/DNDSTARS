@@ -108,9 +108,10 @@ describe('archer document feature config', () => {
     }
   })
 
-  it('uses the document names for changed features', () => {
-    expect(getClassFeatureDef('stableMind')?.name).toBe('稳定心神')
-    expect(getClassFeatureDef('swiftShot')?.name).toBe('迅捷射击')
+  it('uses the current names for restored features', () => {
+    expect(getClassFeatureDef('stableMind')?.name).toBe('残影脱身')
+    expect(getClassFeatureDef('swiftShot')?.name).toBe('波澜不惊')
+    expect(getClassFeatureDef('swiftShot')?.description).toContain('切换静心/气喘状态')
     expect(getClassFeatureDef('finale')?.description).toContain('消耗 2 AP')
   })
 })
