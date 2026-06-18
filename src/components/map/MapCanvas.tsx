@@ -12,7 +12,6 @@ import {
   loadKnockbackIcon,
   loadOutOfBreathIcon,
   loadPoisonIcon,
-  loadPreciseStrikeIcon,
   loadSilentDrawIcon,
 } from '../../lib/imageAlpha'
 import {
@@ -569,27 +568,63 @@ function SilentDrawBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex?
 }
 
 function PreciseStrikeBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex?: number }) {
-  const [iconCanvas, setIconCanvas] = useState<HTMLCanvasElement | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    loadPreciseStrikeIcon().then((c) => {
-      if (!cancelled) setIconCanvas(c)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  if (!iconCanvas) return null
-
+  const size = rightBadgeSize(radius)
+  const { x, y } = rightBadgeGridPos(radius, size, gridIndex)
+  const r = size / 2
+  const strokeW = tokenLineWidth(radius, 1.5)
+  const scale = tokenScale(radius)
   return (
-    <RingedStatusIconBadge
-      radius={radius}
-      gridIndex={gridIndex}
-      iconCanvas={iconCanvas}
-      ringColor="#fb7185"
-    />
+    <Group x={x} y={y} listening={false}>
+      <Circle
+        radius={r}
+        fill="#311020"
+        stroke="#fb7185"
+        strokeWidth={strokeW}
+        shadowBlur={4 * scale}
+        shadowColor="rgba(251,113,133,0.75)"
+        listening={false}
+      />
+      <Circle radius={r * 0.45} stroke="#fecdd3" strokeWidth={Math.max(1, 1.4 * scale)} listening={false} />
+      <Circle radius={r * 0.16} fill="#fecdd3" listening={false} />
+      <Line
+        points={[-r * 0.68, 0, -r * 0.28, 0]}
+        stroke="#fecdd3"
+        strokeWidth={Math.max(1, 1.4 * scale)}
+        lineCap="round"
+        listening={false}
+      />
+      <Line
+        points={[r * 0.28, 0, r * 0.68, 0]}
+        stroke="#fecdd3"
+        strokeWidth={Math.max(1, 1.4 * scale)}
+        lineCap="round"
+        listening={false}
+      />
+      <Line
+        points={[0, -r * 0.68, 0, -r * 0.28]}
+        stroke="#fecdd3"
+        strokeWidth={Math.max(1, 1.4 * scale)}
+        lineCap="round"
+        listening={false}
+      />
+      <Line
+        points={[0, r * 0.28, 0, r * 0.68]}
+        stroke="#fecdd3"
+        strokeWidth={Math.max(1, 1.4 * scale)}
+        lineCap="round"
+        listening={false}
+      />
+      <Arrow
+        points={[-r * 0.52, r * 0.5, r * 0.46, -r * 0.48]}
+        pointerLength={Math.max(4, 5 * scale)}
+        pointerWidth={Math.max(4, 5 * scale)}
+        stroke="#fda4af"
+        fill="#fda4af"
+        strokeWidth={Math.max(1.2, 1.9 * scale)}
+        lineCap="round"
+        listening={false}
+      />
+    </Group>
   )
 }
 

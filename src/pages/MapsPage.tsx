@@ -636,6 +636,7 @@ export default function MapsPage() {
   // T-P2-398 (398-A): dedup roll-request by requestId (AC3) — same requestId
   // arriving twice (SSE fan-out to multiple local endpoints) renders once.
   const seenRollRequestIdsRef = useRef(new Set<string>())
+  const combatLogSaveQueueRef = useRef(Promise.resolve())
   const pendingDiceStreamsRef = useRef(
     new Map<
       string,
@@ -723,15 +724,19 @@ export default function MapsPage() {
     seenSharedLogIdsRef.current.add(entry.id)
     setCombatLog((current) => [entry, ...current].slice(0, 80))
     if (activeMap) {
-      void (async () => {
-        const current = await loadSharedResource<SharedCombatLogState>('combat-log')
-        const entries = current?.mapId === activeMap.id ? current.entries ?? [] : []
-        await saveSharedResource<SharedCombatLogState>('combat-log', {
-          mapId: activeMap.id,
-          entries: [entry, ...entries.filter((item) => item.id !== entry.id)].slice(0, 100),
-          updatedAt: Date.now(),
+      const mapId = activeMap.id
+      combatLogSaveQueueRef.current = combatLogSaveQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const current = await loadSharedResource<SharedCombatLogState>('combat-log')
+          const entries = current?.mapId === mapId ? current.entries ?? [] : []
+          await saveSharedResource<SharedCombatLogState>('combat-log', {
+            mapId,
+            entries: [entry, ...entries.filter((item) => item.id !== entry.id)].slice(0, 100),
+            updatedAt: Date.now(),
+          })
         })
-      })()
+      void combatLogSaveQueueRef.current
     }
   }
 
@@ -2304,10 +2309,11 @@ export default function MapsPage() {
     if (!attackTargeting || !activeMap) return
     const { casterId, doubleArrow } = attackTargeting
     const skill = opts?.skillOverride ?? attackTargeting.skill
-    const caster = characters.find((c) => c.id === casterId)
+    const liveCharacters = useCharacterStore.getState().characters
+    const caster = liveCharacters.find((c) => c.id === casterId)
     const casterToken = activeMap.tokens.find((t) => t.characterId === casterId)
     const targetChar = token.characterId
-      ? characters.find((c) => c.id === token.characterId)
+      ? liveCharacters.find((c) => c.id === token.characterId)
       : undefined
     const targetAc = targetChar ? getAc(targetChar) : (getTokenTargetAc(token) ?? 12)
     const isRanged =
@@ -2514,7 +2520,7 @@ export default function MapsPage() {
       const featureDiceLabel =
         featureExtraLabelParts.length > 0 ? `+${featureExtraLabelParts.join('+')}` : ''
       const diceLabel = `${diceCount}d${damageSides}${extraDiceLabel}${featureDiceLabel}${skill.damageBonus ? `+${skill.damageBonus}` : ''}`
-      rollLabel = `${skill.name}${doubleArrow ? '（双箭）' : ''}${forceCrit ? '（精准打击）' : ''} ${diceLabel}`
+      rollLabel = `${skill.name}${doubleArrow ? '（双箭）' : ''}${forceCrit ? '（精准打击）' : ''} ${diceLabel}${isCrit ? ' 重击' : ''}`
     }
 
     if (hit && caster) {
@@ -2960,7 +2966,7 @@ export default function MapsPage() {
         }
       }
       if (token.characterId) {
-        const ch = characters.find((c) => c.id === token.characterId)
+        const ch = useCharacterStore.getState().characters.find((c) => c.id === token.characterId)
         if (ch) {
           const conds = [...ch.conditions]
           if (burnTurns && !conds.includes(STATUS_LABEL.burning)) conds.push(STATUS_LABEL.burning)
@@ -2988,18 +2994,9 @@ export default function MapsPage() {
         isCrit &&
         canUseArmorPiercing(caster, skill, true)
       ) {
-        const apTrait = findClassTrait(caster, 'armorPiercingArrow')
         const splash = Math.floor(total / 2)
         const behindTargets = findArmorPiercingTargets(casterToken, token, splash)
-        if (
-          behindTargets.length > 0 &&
-          splash > 0 &&
-          confirm(
-            `穿甲箭（重击）：对 ${token.label} 后方 15 尺通道内 ${behindTargets
-              .map((t) => t.label)
-              .join('、')} 各造成 ${splash} 点伤害（本次一半）？\n剩余 ${apTrait?.uses ?? 0} / ${apTrait?.maxUses ?? 0} 次`,
-          )
-        ) {
+        if (behindTargets.length > 0 && splash > 0) {
           useClassFeature(casterId, 'armorPiercingArrow')
           for (const behind of behindTargets) {
             await applyDamageToToken(behind, splash, { caster })
@@ -3106,7 +3103,7 @@ export default function MapsPage() {
     const aoeTargeting = opts?.targetingOverride ?? targeting
     if (!aoeTargeting?.aoe || !activeMap) return
     const { skill, casterId, aoe } = aoeTargeting
-    const caster = characters.find((c) => c.id === casterId)
+    const caster = useCharacterStore.getState().characters.find((c) => c.id === casterId)
     const casterToken = activeMap.tokens.find((t) => t.characterId === casterId)
     if (!caster || !casterToken) return
 
@@ -4325,17 +4322,30 @@ export default function MapsPage() {
     let damageDiceResolved = false
     const enemyFeatureLabels: string[] = []
 
-    const resolveEnemyDamageDice = async () => {
-      if (!result.attack || result.damage == null || result.damage <= 0) {
-        return result.damage ?? 0
+    const inferEnemyDamageDiceCount = (attack: NonNullable<EnemyTurnResult['attack']>) => {
+      if (attack.values.length > 0) return attack.values.length
+      const match = attack.label.match(/(\d+)\s*d\s*(\d+)/i)
+      if (match && Number(match[2]) === attack.sides) {
+        return Math.max(1, Number(match[1]))
       }
-      const diceCount = Math.max(1, result.attack.values.length || 1)
-      let values = await rollDiceBoxValues(
-        diceCount,
+      return 1
+    }
+
+    const rollEnemyBaseDamageDice = async () => {
+      if (!result.attack) return []
+      return rollDiceBoxValues(
+        inferEnemyDamageDiceCount(result.attack),
         result.attack.sides,
         `${result.attack.label} 伤害`,
         result.attack.targetName,
       )
+    }
+
+    const resolveEnemyDamageDice = async () => {
+      if (!result.attack || result.damage == null || result.damage <= 0) {
+        return result.damage ?? 0
+      }
+      let values = await rollEnemyBaseDamageDice()
       const attackerToken = activeMap.tokens.find((t) => t.id === result.attackerTokenId)
       const huntedByTargetRank = huntingMarkTraitRank(targetChar)
       if (
@@ -4443,7 +4453,16 @@ export default function MapsPage() {
       const damageType = result.damageType ?? 'physical'
 
       if (damageType === 'aoe') {
-        const estimatedDamage = Math.max(1, result.damage ?? result.attack?.total ?? 0)
+        let estimatedDamage = Math.max(1, result.damage ?? result.attack?.total ?? 0)
+        if (result.attack) {
+          const values = await rollEnemyBaseDamageDice()
+          damageRollValues = values
+          const diceTotal = values.reduce((sum, value) => sum + value, 0)
+          damageRollBonus = result.attack.bonus
+          damageRollTotal = Math.max(0, diceTotal + result.attack.bonus)
+          damageDiceResolved = true
+          estimatedDamage = Math.max(1, damageRollTotal)
+        }
         const saveD20 = await rollDiceBoxD20('敏捷豁免 D20', targetChar.name)
         const save = resolveDexSaveDamage(
           targetChar,
@@ -4468,7 +4487,7 @@ export default function MapsPage() {
             stableMindNote = ' · 残影脱身：已抵消全部伤害'
           }
         }
-        combatLabel = `敏捷豁免 ${save.saveD20}+${save.saveMod} vs DC${save.dc} ${save.success ? '成功（半伤）' : '失败（全额）'}${stableMindNote}`
+        combatLabel = `敏捷豁免 ${save.saveD20}+${save.saveMod} vs DC${save.dc} ${save.success ? `成功（半伤，实际 ${finalDamage}）` : `失败（全额，实际 ${finalDamage}）`}${stableMindNote}`
         d20Roll = {
           value: save.saveD20,
           modifier: save.saveMod,

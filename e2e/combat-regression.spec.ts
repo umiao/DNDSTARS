@@ -76,6 +76,8 @@ async function seedEncounter(
     heroPatch?: Record<string, unknown>
     heroTraits?: Array<Record<string, unknown>>
     enemyApByToken?: Record<string, { current: number; max: number }>
+    tokenOverrides?: Record<string, Record<string, unknown>>
+    extraTokens?: Array<Record<string, unknown>>
   } = {},
 ) {
   const now = Date.now()
@@ -105,6 +107,47 @@ async function seedEncounter(
     selectedId: 'hero-regression',
     updatedAt: now,
   })
+  const tokens: Array<Record<string, unknown>> = [
+    {
+      id: 'goblin-regression',
+      label: 'E2E Goblin',
+      ...center(1, 1),
+      color: '#f87171',
+      emoji: '👺',
+      size: 1,
+      type: 'enemy',
+      hp: 20,
+      maxHp: 20,
+      poolId: 'goblin',
+      showHpOnToken: true,
+      showDetailOnToken: true,
+    },
+    {
+      id: 'red-dragon-regression',
+      label: 'E2E Red Dragon Wyrmling',
+      ...center(2, 2),
+      color: '#ef4444',
+      emoji: '🐉',
+      size: 1,
+      type: 'enemy',
+      hp: 40,
+      maxHp: 40,
+      poolId: 'wyrmling-red',
+      showHpOnToken: true,
+      showDetailOnToken: true,
+    },
+    {
+      id: 'player-regression',
+      label: 'E2E Adventurer',
+      ...center(10, 1),
+      color: '#34d399',
+      emoji: '🧝',
+      size: 1,
+      type: 'player',
+      characterId: 'hero-regression',
+    },
+  ].map((token) => ({ ...token, ...(opts.tokenOverrides?.[token.id] ?? {}) }))
+  if (opts.extraTokens) tokens.push(...opts.extraTokens)
   await putState(request, 'maps', {
     selectedId: mapId,
     updatedAt: now,
@@ -124,46 +167,7 @@ async function seedEncounter(
         gridOpacity: 0.28,
         showCoordinates: true,
         snapMonstersToGrid: true,
-        tokens: [
-          {
-            id: 'goblin-regression',
-            label: 'E2E Goblin',
-            ...center(1, 1),
-            color: '#f87171',
-            emoji: '👺',
-            size: 1,
-            type: 'enemy',
-            hp: 20,
-            maxHp: 20,
-            poolId: 'goblin',
-            showHpOnToken: true,
-            showDetailOnToken: true,
-          },
-          {
-            id: 'red-dragon-regression',
-            label: 'E2E Red Dragon Wyrmling',
-            ...center(2, 2),
-            color: '#ef4444',
-            emoji: '🐉',
-            size: 1,
-            type: 'enemy',
-            hp: 40,
-            maxHp: 40,
-            poolId: 'wyrmling-red',
-            showHpOnToken: true,
-            showDetailOnToken: true,
-          },
-          {
-            id: 'player-regression',
-            label: 'E2E Adventurer',
-            ...center(10, 1),
-            color: '#34d399',
-            emoji: '🧝',
-            size: 1,
-            type: 'player',
-            characterId: 'hero-regression',
-          },
-        ],
+        tokens,
       },
     ],
   })
@@ -305,6 +309,130 @@ test('player precise strike activation is accepted by DM authority', async ({ br
   await context.close()
 })
 
+test('precise strike forces crit and armor piercing hits aligned targets', async ({ browser, request }) => {
+  const mapId = `e2e-precise-pierce-${Date.now()}`
+  await seedEncounter(request, mapId, {
+    playerFirst: true,
+    enemyApByToken: {
+      'goblin-regression': { current: 0, max: 2 },
+      'red-dragon-regression': { current: 0, max: 2 },
+    },
+    heroPatch: {
+      combatBuffs: { preciseStrikeReady: true },
+    },
+    heroTraits: [
+      {
+        id: 'precise-ready-regression',
+        name: '精准打击',
+        level: 1,
+        uses: 1,
+        maxUses: 1,
+        description: '使得下一次攻击必定造成重击。',
+        featureKey: 'preciseStrike',
+      },
+      {
+        id: 'piercing-ready-regression',
+        name: '穿甲箭',
+        level: 1,
+        uses: 1,
+        maxUses: 1,
+        description: '重击后对目标后方直线 15 尺目标造成本次伤害一半。',
+        featureKey: 'armorPiercingArrow',
+      },
+    ],
+    tokenOverrides: {
+      'player-regression': center(1, 1),
+      'goblin-regression': { ...center(3, 1), hp: 80, maxHp: 80 },
+      'red-dragon-regression': center(8, 5),
+    },
+    extraTokens: [
+      {
+        id: 'rear-goblin-regression',
+        label: 'E2E Rear Goblin',
+        ...center(5, 1),
+        color: '#f87171',
+        emoji: '👺',
+        size: 1,
+        type: 'enemy',
+        hp: 80,
+        maxHp: 80,
+        poolId: 'goblin',
+        showHpOnToken: true,
+        showDetailOnToken: true,
+      },
+    ],
+  })
+
+  const context = await browser.newContext()
+  const dm = await context.newPage()
+  const player = await context.newPage()
+  await Promise.all([
+    dm.goto(`${DM}/maps`, { waitUntil: 'domcontentloaded' }),
+    player.goto(`${PLAYER}/maps`, { waitUntil: 'domcontentloaded' }),
+  ])
+
+  await expect
+    .poll(
+      async () => {
+        const combat = await getState<{ mapId?: string; active?: boolean; initiativeIndex?: number }>(request, 'combat')
+        return combat.mapId === mapId && combat.active && combat.initiativeIndex === 0
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true)
+
+  const now = Date.now()
+  const action = {
+    id: `${mapId}:player-action:${now}:attack`,
+    mapId,
+    sourceMode: 'player',
+    status: 'pending',
+    type: 'attack-token',
+    actorTokenId: 'player-regression',
+    characterId: 'hero-regression',
+    targetTokenId: 'goblin-regression',
+    skillId: 'tree-basicShot',
+    round: 1,
+    initiativeIndex: 0,
+    seq: 1,
+    updatedAt: now,
+  }
+  await putState(request, 'player-action', action)
+  await postEvent(request, 'player-action-player-to-dm', action)
+
+  await expect
+    .poll(
+      async () => {
+        const ack = await getState<{ actionId?: string; status?: string }>(request, 'player-action-ack')
+        return ack.actionId === action.id ? ack.status : ''
+      },
+      { timeout: 30_000 },
+    )
+    .toBe('accepted')
+
+  await expect
+    .poll(
+      async () => {
+        const log = await getState<{ entries: Array<{ text: string }> }>(request, 'combat-log')
+        return log.entries.map((entry) => entry.text).join('\n')
+      },
+      { timeout: 30_000 },
+    )
+    .toContain('穿甲箭溅射')
+
+  const maps = await getState<{ maps: Array<{ id: string; tokens: Array<{ id: string; hp?: number }> }> }>(request, 'maps')
+  const map = maps.maps.find((item) => item.id === mapId)
+  const rear = map?.tokens.find((token) => token.id === 'rear-goblin-regression')
+  expect(rear?.hp).toBeLessThan(80)
+
+  const log = await getState<{ entries: Array<{ text: string }> }>(request, 'combat-log')
+  const text = log.entries.map((entry) => entry.text).join('\n')
+  expect(text).toContain('精准打击')
+  expect(text).toContain('重击')
+
+  await context.close()
+})
+
 test('stable mind is offered after a successful dex save and prevents damage', async ({ browser, request }) => {
   const mapId = `e2e-stable-mind-${Date.now()}`
   await seedEncounter(request, mapId, {
@@ -378,6 +506,11 @@ test('stable mind is offered after a successful dex save and prevents damage', a
       { timeout: 20_000 },
     )
     .toContain('残影脱身')
+
+  const log = await getState<{ entries: Array<{ text: string }> }>(request, 'combat-log')
+  const text = log.entries.map((entry) => entry.text).join('\n')
+  expect(text).toMatch(/火焰吐息[\s\S]*伤害骰\s+\d+\s+\+\s+\d+\s+\+\s+\d+\s+\+\s+\d+/)
+  expect(text).not.toContain('火焰吐息 4d6（敏捷豁免成功半伤） → E2E Adventurer：伤害骰 无')
 
   await context.close()
 })
