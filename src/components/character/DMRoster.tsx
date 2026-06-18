@@ -1,4 +1,4 @@
-import { Eye, EyeOff, Trash2, Minus, Plus, Heart } from 'lucide-react'
+import { Eye, EyeOff, Trash2, Minus, Plus, Heart, Moon } from 'lucide-react'
 import { useCharacterStore } from '../../store/characters'
 
 export default function DMRoster() {
@@ -6,12 +6,27 @@ export default function DMRoster() {
   const update = useCharacterStore((s) => s.update)
   const remove = useCharacterStore((s) => s.remove)
   const select = useCharacterStore((s) => s.select)
+  const longRestAll = useCharacterStore((s) => s.longRestAll)
 
   return (
     <div className="glass rounded-2xl p-4">
       <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
         名册总览 · DM 快速控制
       </p>
+      <div className="mb-3 flex justify-end">
+        <button
+          onClick={() => {
+            if (confirm('确认让所有角色完成一次长休？这会回满生命值、清空临时生命、回满特性次数和气，并清除技能冷却。')) {
+              longRestAll()
+            }
+          }}
+          className="flex items-center gap-1.5 rounded-lg border border-violet-400/30 bg-violet-500/15 px-3 py-1.5 text-xs font-semibold text-violet-100 transition-colors hover:bg-violet-500/25"
+          title="一键长休"
+        >
+          <Moon className="h-3.5 w-3.5" />
+          一键长休
+        </button>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>

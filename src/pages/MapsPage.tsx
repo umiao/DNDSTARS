@@ -569,6 +569,7 @@ export default function MapsPage() {
     id: string
     label: string
   } | null>(null)
+  const playerActionRollbackRef = useRef<Record<string, () => void>>({})
   const [showMoveRange, setShowMoveRange] = useState(false)
   const [disengagedCharIds, setDisengagedCharIds] = useState<Set<string>>(() => new Set())
   const enemyAppliedKeysRef = useRef(new Set<string>())
@@ -4999,6 +5000,24 @@ export default function MapsPage() {
       seq,
       updatedAt: Date.now(),
     }
+    const previousQi = turnCharacter.qi ?? 0
+    const previousRemaining = skill.remaining
+    updateChar(turnCharacter.id, {
+      qi: Math.max(0, previousQi - 1),
+      combatSkills: turnCharacter.combatSkills.map((s) =>
+        s.id === skill.id ? { ...s, remaining: Math.max(0, s.remaining - 1) } : s,
+      ),
+    })
+    playerActionRollbackRef.current[action.id] = () => {
+      const latest = useCharacterStore.getState().characters.find((c) => c.id === turnCharacter.id)
+      if (!latest) return
+      updateChar(turnCharacter.id, {
+        qi: previousQi,
+        combatSkills: latest.combatSkills.map((s) =>
+          s.id === skill.id ? { ...s, remaining: previousRemaining } : s,
+        ),
+      })
+    }
     setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 消耗气降低冷却` })
     void saveSharedResource<SharedPlayerActionState>('player-action', action)
     void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
@@ -5033,6 +5052,10 @@ export default function MapsPage() {
       seenPlayerActionAckIdsRef.current.add(ack.id)
       setPendingPlayerAction((current) => {
         if (!current || current.id !== ack.actionId) return current
+        if (ack.status === 'rejected') {
+          playerActionRollbackRef.current[ack.actionId]?.()
+        }
+        delete playerActionRollbackRef.current[ack.actionId]
         window.setTimeout(() => {
           setPendingPlayerAction((latest) => (latest?.id === ack.actionId ? null : latest))
         }, 100)

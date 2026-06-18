@@ -18,6 +18,7 @@ import {
 } from '../lib/classFeatures'
 import {
   migrateCharacterTraits,
+  maxQiForLevel,
   resetCombatTraitUses,
   syncQiForCharacter,
   TRAIT_CHOICE_GROUPS,
@@ -604,6 +605,7 @@ interface CharacterState {
   importCharacter: (character: Partial<Character>) => string
   update: (id: string, patch: Partial<Character>) => void
   remove: (id: string) => void
+  longRestAll: () => void
 
   // —— 技能冷却系统 ——
   useSkill: (charId: string, skillId: string, opts?: { waiveAp?: boolean }) => void
@@ -752,6 +754,28 @@ export const useCharacterStore = create<CharacterState>()(
             window.setTimeout(saveCharacters, 0)
             return next
           }),
+        longRestAll: () => {
+          set((s) => ({
+            characters: s.characters.map((c) =>
+              syncQiForCharacter({
+                ...c,
+                currentHp: c.maxHp,
+                tempHp: 0,
+                currentAP: c.actionPoints,
+                qi: maxQiForLevel(c.level),
+                combatSkills: c.combatSkills.map((skill) => ({
+                  ...skill,
+                  remaining: 0,
+                  usedThisTurn: false,
+                })),
+                traits: c.traits.map((trait) =>
+                  trait.maxUses > 0 ? { ...trait, uses: trait.maxUses } : trait,
+                ),
+              }),
+            ),
+          }))
+          saveCharacters()
+        },
 
         useSkill: (charId, skillId, opts) => {
           const c = get().characters.find((x) => x.id === charId)
