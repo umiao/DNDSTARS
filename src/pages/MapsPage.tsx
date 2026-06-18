@@ -181,13 +181,14 @@ interface SharedPlayerActionState {
   mapId: string
   sourceMode: 'player'
   status: 'pending' | 'done'
-  type: 'end-turn' | 'attack-token' | 'aoe-attack' | 'qi-reduce-cooldown'
+  type: 'end-turn' | 'attack-token' | 'aoe-attack' | 'qi-reduce-cooldown' | 'activate-feature'
   actorTokenId: string
   characterId: string
   targetTokenId?: string
   targetCell?: GridCell
   aoeRectRotation?: number
   skillId?: string
+  featureKey?: ClassFeatureKey
   round: number
   initiativeIndex: number
   seq: number
@@ -472,7 +473,6 @@ export default function MapsPage() {
   const resolvingAoeRef = useRef(false)
   const applyingSharedCombatRef = useRef(false)
   const advancingTurnRef = useRef(false)
-  const roundApResetKeysRef = useRef(new Set<string>())
   const [diceBoxD20, setDiceBoxD20] = useState<{
     id: number
     label: string
@@ -652,8 +652,18 @@ export default function MapsPage() {
   }, [enemyApByToken])
   const playerTurnStartedRef = useRef(new Set<string>())
   const multiStrikeHitsRef = useRef<Record<string, number>>({})
+  const combatActiveRef = useRef(false)
+  const roundRef = useRef(1)
   const initiativeIndexRef = useRef(0)
   const initiativeOrderRef = useRef<InitiativeEntry[]>([])
+
+  useEffect(() => {
+    combatActiveRef.current = combatActive
+  }, [combatActive])
+
+  useEffect(() => {
+    roundRef.current = round
+  }, [round])
 
   useEffect(() => {
     initiativeIndexRef.current = initiativeIndex
@@ -856,7 +866,9 @@ export default function MapsPage() {
     lastSharedCombatSnapshot = snapshot
     applyingSharedCombatRef.current = true
     setCombatActive(active)
+    combatActiveRef.current = active
     setRound(state.round)
+    roundRef.current = state.round
     setInitiativeOrder(initiativeOrder)
     initiativeOrderRef.current = initiativeOrder
     setInitiativeIndex(initiativeIndex)
@@ -965,18 +977,6 @@ export default function MapsPage() {
     }
     return nextCharacters
   }
-
-  useEffect(() => {
-    if (mode !== 'dm' || !combatActive || !activeMap || initiativeOrder.length === 0 || initiativeIndex !== 0) return
-    const key = `${activeMap.id}:${round}`
-    if (roundApResetKeysRef.current.has(key)) return
-    roundApResetKeysRef.current.add(key)
-    resetRoundApForActiveMap('round-start')
-    const timer = window.setTimeout(() => {
-      resetRoundApForActiveMap('round-start-confirm')
-    }, 250)
-    return () => window.clearTimeout(timer)
-  }, [activeMap, combatActive, initiativeIndex, initiativeOrder.length, round])
 
   useEffect(() => {
     if (!activeMap) return
@@ -3200,6 +3200,10 @@ export default function MapsPage() {
 
   const handleActivateFeature = async (key: ClassFeatureKey) => {
     if (!canControlPlayerTurn || !turnCharacter) return
+    if (!isDM && key === 'preciseStrike') {
+      sendPlayerActivateFeatureRequest(key)
+      return
+    }
     if (key === 'eagleEye') {
       const currentTrait = findClassTrait(turnCharacter, 'eagleEye')
       if (!currentTrait || currentTrait.uses <= 0) return
@@ -3255,11 +3259,12 @@ export default function MapsPage() {
       }
       const ready = !turnCharacter.combatBuffs?.preciseStrikeReady
       if (ready) {
-        if (!spendAP(turnCharacter.id, 1)) {
+        if (turnCharacter.currentAP < 1) {
           alert('行动点不足（需要 1 AP）')
           return
         }
         updateChar(turnCharacter.id, {
+          currentAP: turnCharacter.currentAP - 1,
           combatBuffs: { ...turnCharacter.combatBuffs, preciseStrikeReady: true },
         })
         pushApLog(turnCharacter, 1, '准备精准打击')
@@ -4040,7 +4045,9 @@ export default function MapsPage() {
     enemyApByTokenRef.current = initialEnemyAp
     setEnemyApByToken(initialEnemyAp)
     setCombatActive(true)
+    combatActiveRef.current = true
     setRound(1)
+    roundRef.current = 1
     setInitiativeOrder(order)
     initiativeOrderRef.current = order
     setInitiativeIndex(0)
@@ -4063,6 +4070,7 @@ export default function MapsPage() {
     afterRollRef.current = null
     setRoll(null)
     setCombatActive(false)
+    combatActiveRef.current = false
     setInitiativeOrder([])
     initiativeOrderRef.current = []
     setInitiativeIndex(0)
@@ -4757,6 +4765,7 @@ export default function MapsPage() {
     setEnemyApByToken(nextEnemyAp)
     pushCombatLog(`进入第 ${next} 回合`, 'turn', next)
     setRound(next)
+    roundRef.current = next
     publishCombatState({
       active: true,
       round: next,
@@ -4862,22 +4871,62 @@ export default function MapsPage() {
 
   const handlePlayerActionRequest = async (action: SharedPlayerActionState) => {
     if (!isDM || !activeMap || action.mapId !== activeMap.id || action.status !== 'pending') return
+    const liveRound = roundRef.current
+    const liveIndex = initiativeIndexRef.current
+    const current = initiativeOrderRef.current[liveIndex]
+    if (!combatActiveRef.current || !current) return
     if (seenPlayerActionIdsRef.current.has(action.id)) return
     seenPlayerActionIdsRef.current.add(action.id)
 
-    const current = initiativeOrderRef.current[initiativeIndexRef.current]
+    const liveCurrentToken = activeMap.tokens.find((token) => token.id === current?.tokenId)
     const validTurn =
-      combatActive &&
-      action.round === round &&
-      action.initiativeIndex === initiativeIndexRef.current &&
+      combatActiveRef.current &&
+      action.round === liveRound &&
+      action.initiativeIndex === liveIndex &&
       current?.tokenId === action.actorTokenId &&
-      currentInitiativeToken?.id === action.actorTokenId &&
-      currentInitiativeToken?.type === 'player' &&
-      currentInitiativeToken.characterId === action.characterId
+      liveCurrentToken?.id === action.actorTokenId &&
+      liveCurrentToken?.type === 'player' &&
+      liveCurrentToken.characterId === action.characterId
 
     if (!validTurn) {
       acknowledgePlayerAction(action, 'rejected', 'stale-turn')
       completePlayerActionRequest(action)
+      return
+    }
+
+    if (action.type === 'activate-feature') {
+      const actor = useCharacterStore.getState().characters.find((c) => c.id === action.characterId)
+      if (!actor || action.featureKey !== 'preciseStrike') {
+        acknowledgePlayerAction(action, 'rejected', 'unsupported-feature')
+        completePlayerActionRequest(action)
+        return
+      }
+      const trait = findClassTrait(actor, 'preciseStrike')
+      if (!trait || trait.uses <= 0) {
+        acknowledgePlayerAction(action, 'rejected', 'feature-unavailable')
+        completePlayerActionRequest(action)
+        return
+      }
+      const ready = !actor.combatBuffs?.preciseStrikeReady
+      if (ready) {
+        if (actor.currentAP < 1) {
+          acknowledgePlayerAction(action, 'rejected', 'insufficient-ap')
+          completePlayerActionRequest(action)
+          return
+        }
+        updateChar(actor.id, {
+          currentAP: actor.currentAP - 1,
+          combatBuffs: { ...actor.combatBuffs, preciseStrikeReady: true },
+        })
+        pushApLog(actor, 1, '准备精准打击')
+      } else {
+        updateChar(actor.id, {
+          combatBuffs: { ...actor.combatBuffs, preciseStrikeReady: undefined },
+        })
+        pushCombatLog(`${actor.name} 取消精准打击`, 'turn')
+      }
+      completePlayerActionRequest(action)
+      acknowledgePlayerAction(action, 'accepted')
       return
     }
 
@@ -5004,6 +5053,31 @@ export default function MapsPage() {
       updatedAt: Date.now(),
     }
     setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 结束回合` })
+    void saveSharedResource<SharedPlayerActionState>('player-action', action)
+    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
+    return true
+  }
+
+  const sendPlayerActivateFeatureRequest = (featureKey: ClassFeatureKey) => {
+    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
+    const seq = playerActionSeqRef.current + 1
+    playerActionSeqRef.current = seq
+    const action: SharedPlayerActionState = {
+      id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
+      mapId: activeMap.id,
+      sourceMode: 'player',
+      status: 'pending',
+      type: 'activate-feature',
+      actorTokenId: currentInitiativeToken.id,
+      characterId: turnCharacter.id,
+      featureKey,
+      round,
+      initiativeIndex,
+      seq,
+      updatedAt: Date.now(),
+    }
+    const featureName = findClassTrait(turnCharacter, featureKey)?.name ?? featureKey
+    setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 激活${featureName}` })
     void saveSharedResource<SharedPlayerActionState>('player-action', action)
     void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
     return true

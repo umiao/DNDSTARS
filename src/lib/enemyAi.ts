@@ -97,6 +97,66 @@ function resolveTokenCharacterId(token: Token): string | undefined {
   return undefined
 }
 
+function enemyRangedRangeCells(enemy: Token, map: BattleMap): number | null {
+  if (!enemy.poolId) return null
+  const block = getEnemyStatBlock(enemy.poolId)
+  const rangedAction = block?.actions.find((action) => /远程|射程|短弓|长弓|弩|标枪/.test(action.description))
+  if (!rangedAction) return null
+  const match = rangedAction.description.match(/射程\s*(\d+)/)
+  const feet = match ? Number(match[1]) : 80
+  const feetPerCell = Math.max(1, map.feetPerCell ?? 5)
+  return Math.max(1, Math.floor(feet / feetPerCell))
+}
+
+function buildEnemyAttack(
+  enemy: Token,
+  target: Token,
+  moved: boolean,
+  pos: { x: number; y: number } | undefined,
+  kind: 'melee' | 'ranged',
+): EnemyTurnResult {
+  const values: number[] = []
+  const total = 1
+  let diceLabel: string
+  let attackBonus: number
+
+  const derived = enemy.poolId ? enemyCombatInput(enemy.poolId) : undefined
+  if (derived) {
+    attackBonus = 0
+    diceLabel = `${ATTACK_DICE.count}d${ATTACK_DICE.sides}`
+  } else {
+    const dexBonus = enemyMeleeDexBonus(enemy)
+    attackBonus = dexBonus
+    diceLabel = `${ATTACK_DICE.count}d${ATTACK_DICE.sides}${dexBonus >= 0 ? '+' : ''}${dexBonus}`
+  }
+  const targetCharacterId = resolveTokenCharacterId(target)
+
+  const result: EnemyTurnResult = {
+    moved,
+    moveApSpent: moved ? 1 : 0,
+    newPosition: pos,
+    attacked: true,
+    attackerTokenId: enemy.id,
+    targetTokenId: target.id,
+    attack: {
+      values,
+      sides: ATTACK_DICE.sides,
+      bonus: attackBonus,
+      total,
+      label: `${kind === 'ranged' ? '远程' : '近战'} ${diceLabel}`,
+      targetName: target.label,
+    },
+    damage: total,
+    message: `${enemy.label} ${moved ? '移动后' : ''}${kind === 'ranged' ? '远程攻击' : '攻击'} ${target.label}，造成 ${total} 点伤害。`,
+  }
+
+  if (targetCharacterId) {
+    result.targetCharacterId = targetCharacterId
+  }
+
+  return result
+}
+
 export function planEnemyTurn(
   map: BattleMap,
   enemy: Token,
@@ -111,6 +171,7 @@ export function planEnemyTurn(
 
   const startCell = pixelToCell(enemy.x, enemy.y, map)
   const nearest = findNearestPlayer(startCell, players, map)!
+  const rangedRangeCells = enemyRangedRangeCells(enemy, map)
   if (enemy.poolId === 'wyrmling-red' && (context?.round ?? 1) === 1 && availableAp >= 1) {
     return {
       moved: false,
@@ -135,6 +196,9 @@ export function planEnemyTurn(
   let endCell = startCell
 
   const startDist = cellDistance(startCell, nearest.cell)
+  if (startDist > MELEE_RANGE_CELLS && rangedRangeCells != null && startDist <= rangedRangeCells) {
+    return buildEnemyAttack(enemy, nearest.token, false, undefined, 'ranged')
+  }
   const canDoubleMove = availableAp >= 2
   const needsDoubleMove = canDoubleMove && startDist > MOVE_CELLS_PER_TURN + MELEE_RANGE_CELLS
   const moveBudget = needsDoubleMove ? MOVE_CELLS_PER_TURN * 2 : MOVE_CELLS_PER_TURN
@@ -147,6 +211,11 @@ export function planEnemyTurn(
   const moveApSpent = moved ? (needsDoubleMove ? 2 : 1) : 0
   const afterMoveDist = cellDistance(endCell, nearest.cell)
   const pos = moved ? cellToPixel(endCell, map) : undefined
+  const canRangedAfterMove = rangedRangeCells != null && afterMoveDist <= rangedRangeCells
+
+  if (afterMoveDist > MELEE_RANGE_CELLS && canRangedAfterMove && moveApSpent < availableAp) {
+    return buildEnemyAttack(enemy, nearest.token, moved, pos, 'ranged')
+  }
 
   if (afterMoveDist > MELEE_RANGE_CELLS || moveApSpent >= availableAp) {
     return {
@@ -160,45 +229,6 @@ export function planEnemyTurn(
     }
   }
 
-  const values: number[] = []
-  const total = 1
-  let diceLabel: string
-  let attackBonus: number
-
-  const derived = enemy.poolId ? enemyCombatInput(enemy.poolId) : undefined
-  if (derived) {
-    attackBonus = 0
-    diceLabel = `${ATTACK_DICE.count}d${ATTACK_DICE.sides}`
-  } else {
-    const dexBonus = enemyMeleeDexBonus(enemy)
-    attackBonus = dexBonus
-    diceLabel = `${ATTACK_DICE.count}d${ATTACK_DICE.sides}${dexBonus >= 0 ? '+' : ''}${dexBonus}`
-  }
   const target = nearest.token
-  const targetCharacterId = resolveTokenCharacterId(target)
-
-  const result: EnemyTurnResult = {
-    moved,
-    moveApSpent,
-    newPosition: pos,
-    attacked: true,
-    attackerTokenId: enemy.id,
-    targetTokenId: target.id,
-    attack: {
-      values,
-      sides: ATTACK_DICE.sides,
-      bonus: attackBonus,
-      total,
-      label: `近战 ${diceLabel}`,
-      targetName: target.label,
-    },
-    damage: total,
-    message: `${enemy.label} ${moved ? '移动后' : ''}攻击 ${target.label}，造成 ${total} 点伤害。`,
-  }
-
-  if (targetCharacterId) {
-    result.targetCharacterId = targetCharacterId
-  }
-
-  return result
+  return { ...buildEnemyAttack(enemy, target, moved, pos, 'melee'), moveApSpent }
 }
