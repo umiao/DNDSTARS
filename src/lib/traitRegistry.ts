@@ -188,7 +188,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '精准打击',
     usage: 'perLongRest',
     description:
-      '主动激活需 1 AP。使得下一次攻击必定造成重击。长休可使用 1 次；每提升 1 级特性，长休可额外使用 1 次。',
+      '使得下一次攻击必定造成重击。长休可使用 1 次；每提升 1 级特性，长休可额外使用 1 次。',
     maxUsesAtRank: perLongRestPlusOne,
   },
   {
