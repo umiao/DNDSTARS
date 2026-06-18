@@ -66,7 +66,6 @@ import {
   findClassTrait,
 } from '../lib/classFeatures'
 import { isCalmMindActive, isOutOfBreath, triggerOutOfBreath } from '../lib/calmMind'
-import { formatDexSaveLabel, resolveIncomingDexSaveDamage } from '../lib/stableMind'
 import {
   canAttemptDodge,
   ENEMY_MELEE_ATTACK_BONUS,
@@ -79,6 +78,7 @@ import { TOKEN_STATUS_CLEAR_PATCH } from '../lib/combatStatus'
 import {
   attackDamageDiceCount,
   getEffectiveAbilityMod,
+  resolveDexSaveDamage,
   resolveRangedAttackRoll,
 } from '../lib/archerCombat'
 import {
@@ -172,6 +172,23 @@ interface SharedDodgeState {
   wantsDodge?: boolean
   dodgeD20?: number
   dodgeApSpent?: boolean
+  expiresAt?: number
+  updatedAt: number
+}
+
+interface SharedStableMindState {
+  id: string
+  mapId: string
+  status: 'pending' | 'answered' | 'done'
+  targetCharId: string
+  targetName: string
+  fullDamage: number
+  damageAfterSave: number
+  saveD20: number
+  saveMod: number
+  saveTotal: number
+  dc: number
+  useStableMind?: boolean
   expiresAt?: number
   updatedAt: number
 }
@@ -577,6 +594,17 @@ export default function MapsPage() {
     targetChar: Character
     expiresAt?: number
   } | null>(null)
+  const [sharedStableMindPrompt, setSharedStableMindPrompt] = useState<{
+    id: string
+    targetChar: Character
+    fullDamage: number
+    damageAfterSave: number
+    saveD20: number
+    saveMod: number
+    saveTotal: number
+    dc: number
+    expiresAt?: number
+  } | null>(null)
   const [sharedDodgeNow, setSharedDodgeNow] = useState(Date.now())
   const [pendingPlayerAction, setPendingPlayerAction] = useState<{
     id: string
@@ -593,7 +621,13 @@ export default function MapsPage() {
     targetCharId: string
     onComplete: () => void
   } | null>(null)
+  const pendingSharedStableMindRef = useRef<{
+    id: string
+    targetCharId: string
+    resolve: (useStableMind: boolean) => void
+  } | null>(null)
   const suppressedDodgePromptIdsRef = useRef(new Set<string>())
+  const suppressedStableMindPromptIdsRef = useRef(new Set<string>())
   const playerActionSeqRef = useRef(0)
   const seenPlayerActionIdsRef = useRef(new Set<string>())
   const seenPlayerActionAckIdsRef = useRef(new Set<string>())
@@ -623,11 +657,16 @@ export default function MapsPage() {
   const combatPublishSeqRef = useRef(0)
 
   useEffect(() => {
-    if (!sharedDodgePrompt?.expiresAt) return
+    if (!sharedDodgePrompt?.expiresAt && !sharedStableMindPrompt?.expiresAt) return
     setSharedDodgeNow(Date.now())
     const timer = window.setInterval(() => setSharedDodgeNow(Date.now()), 250)
     return () => window.clearInterval(timer)
-  }, [sharedDodgePrompt?.id, sharedDodgePrompt?.expiresAt])
+  }, [
+    sharedDodgePrompt?.id,
+    sharedDodgePrompt?.expiresAt,
+    sharedStableMindPrompt?.id,
+    sharedStableMindPrompt?.expiresAt,
+  ])
 
   const hashDiceSeed = (text: string): number => {
     let hash = 2166136261
@@ -1317,6 +1356,84 @@ export default function MapsPage() {
           visibleChars.some((c) => c.id === targetChar.id) ||
           !targetChar.dmNotes)
       if (canAnswer) setSharedDodgePrompt({ id: state.id, result: state.result, targetChar, expiresAt: state.expiresAt })
+    }
+    void load()
+    const timer = window.setInterval(load, 500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [activeMap?.id, isDM, characters, playerChar?.id, visibleChars])
+
+  useEffect(() => {
+    if (!activeMap) return
+    let cancelled = false
+    const load = async () => {
+      const state = await loadSharedResource<SharedStableMindState>('stable-mind')
+      if (cancelled || !state || state.mapId !== activeMap.id) return
+      if (suppressedStableMindPromptIdsRef.current.has(state.id)) return
+      if (isDM) {
+        const pending = pendingSharedStableMindRef.current
+        if (!pending || pending.id !== state.id) return
+        if (
+          state.status === 'pending' &&
+          state.expiresAt != null &&
+          Date.now() >= state.expiresAt
+        ) {
+          pendingSharedStableMindRef.current = null
+          await saveSharedResource<SharedStableMindState>('stable-mind', {
+            ...state,
+            status: 'done',
+            useStableMind: false,
+            updatedAt: Date.now(),
+          })
+          pending.resolve(false)
+          return
+        }
+        if (state.status === 'answered') {
+          pendingSharedStableMindRef.current = null
+          await saveSharedResource<SharedStableMindState>('stable-mind', {
+            ...state,
+            status: 'done',
+            updatedAt: Date.now(),
+          })
+          pending.resolve(!!state.useStableMind)
+        }
+        return
+      }
+
+      if (
+        state.status === 'pending' &&
+        state.expiresAt != null &&
+        Date.now() >= state.expiresAt
+      ) {
+        setSharedStableMindPrompt((current) => (current?.id === state.id ? null : current))
+        return
+      }
+      if (state.status !== 'pending') {
+        setSharedStableMindPrompt((current) => (current?.id === state.id ? null : current))
+        return
+      }
+      const targetChar = characters.find((c) => c.id === state.targetCharId)
+      const canAnswer =
+        !!targetChar &&
+        targetChar.currentHp > 0 &&
+        (targetChar.id === playerChar?.id ||
+          visibleChars.some((c) => c.id === targetChar.id) ||
+          !targetChar.dmNotes)
+      if (canAnswer) {
+        setSharedStableMindPrompt({
+          id: state.id,
+          targetChar,
+          fullDamage: state.fullDamage,
+          damageAfterSave: state.damageAfterSave,
+          saveD20: state.saveD20,
+          saveMod: state.saveMod,
+          saveTotal: state.saveTotal,
+          dc: state.dc,
+          expiresAt: state.expiresAt,
+        })
+      }
     }
     void load()
     const timer = window.setInterval(load, 500)
@@ -4092,11 +4209,22 @@ export default function MapsPage() {
     })
   }
 
+  const currentCombatOutcome = () => {
+    if (!activeMap) return { ended: false as const }
+    const latestMap = useMapStore.getState().maps.find((map) => map.id === activeMap.id) ?? activeMap
+    const chars = useCharacterStore.getState().characters
+    return checkCombatOutcome(latestMap.tokens, chars)
+  }
+
+  const hasCombatOutcomeNow = (): boolean => {
+    if (!combatActive || !activeMap) return false
+    return currentCombatOutcome().ended
+  }
+
   const tryEndCombatIfNeeded = (): boolean => {
     if (!combatActive || !activeMap) return false
     if (pendingDeathKeysRef.current.size > 0) return false
-    const chars = useCharacterStore.getState().characters
-    const outcome = checkCombatOutcome(activeMap.tokens, chars)
+    const outcome = currentCombatOutcome()
     if (!outcome.ended) return false
     window.alert(outcome.message)
     endCombat()
@@ -4116,6 +4244,58 @@ export default function MapsPage() {
       return chars.find((c) => c.id === token.characterId)
     }
     return undefined
+  }
+
+  const requestSharedStableMindChoice = (
+    targetChar: Character,
+    save: {
+      fullDamage: number
+      damageAfterSave: number
+      saveD20: number
+      saveMod: number
+      saveTotal: number
+      dc: number
+    },
+  ): Promise<boolean> => {
+    if (!activeMap || !isDM) return Promise.resolve(false)
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const expiresAt = Date.now() + 15000
+    return new Promise((resolve) => {
+      pendingSharedStableMindRef.current = {
+        id,
+        targetCharId: targetChar.id,
+        resolve,
+      }
+      void saveSharedResource<SharedStableMindState>('stable-mind', {
+        id,
+        mapId: activeMap.id,
+        status: 'pending',
+        targetCharId: targetChar.id,
+        targetName: targetChar.name,
+        fullDamage: save.fullDamage,
+        damageAfterSave: save.damageAfterSave,
+        saveD20: save.saveD20,
+        saveMod: save.saveMod,
+        saveTotal: save.saveTotal,
+        dc: save.dc,
+        expiresAt,
+        updatedAt: Date.now(),
+      })
+    })
+  }
+
+  const spendStableMind = (charId: string): boolean => {
+    const latest = useCharacterStore.getState().characters.find((c) => c.id === charId)
+    const trait = latest ? findClassTrait(latest, 'stableMind') : undefined
+    if (!latest || !trait || trait.uses <= 0 || latest.currentAP < 1) return false
+    updateChar(latest.id, {
+      currentAP: latest.currentAP - 1,
+      traits: latest.traits.map((t) =>
+        t.featureKey === 'stableMind' ? { ...t, uses: Math.max(0, t.uses - 1) } : t,
+      ),
+    })
+    pushApLog(latest, 1, '残影脱身', '抵消敏捷豁免后仍会受到的伤害')
+    return true
   }
 
   const finishEnemyAttack = async (
@@ -4265,27 +4445,39 @@ export default function MapsPage() {
       if (damageType === 'aoe') {
         const estimatedDamage = Math.max(1, result.damage ?? result.attack?.total ?? 0)
         const saveD20 = await rollDiceBoxD20('敏捷豁免 D20', targetChar.name)
-        const resolved = resolveIncomingDexSaveDamage(
+        const save = resolveDexSaveDamage(
           targetChar,
           estimatedDamage,
           result.saveDC ?? DEFAULT_AOE_SAVE_DC,
-          () => {
-            if (!spendAP(targetChar.id, 1)) return false
-            pushApLog(targetChar, 1, '残影脱身', '抵消敏捷豁免后仍会受到的伤害')
-            return useClassFeature(targetChar.id, 'stableMind')
-          },
           saveD20,
         )
-        combatLabel = formatDexSaveLabel(resolved)
+        let finalDamage = save.damage
+        let stableMindNote = ''
+        const stableMindTrait = findClassTrait(targetChar, 'stableMind')
+        if (save.success && save.damage > 0 && stableMindTrait && stableMindTrait.uses > 0 && targetChar.currentAP >= 1) {
+          const wantsStableMind = await requestSharedStableMindChoice(targetChar, {
+            fullDamage: estimatedDamage,
+            damageAfterSave: save.damage,
+            saveD20: save.saveD20,
+            saveMod: save.saveMod,
+            saveTotal: save.saveTotal,
+            dc: save.dc,
+          })
+          if (wantsStableMind && spendStableMind(targetChar.id)) {
+            finalDamage = 0
+            stableMindNote = ' · 残影脱身：已抵消全部伤害'
+          }
+        }
+        combatLabel = `敏捷豁免 ${save.saveD20}+${save.saveMod} vs DC${save.dc} ${save.success ? '成功（半伤）' : '失败（全额）'}${stableMindNote}`
         d20Roll = {
-          value: resolved.saveD20,
-          modifier: resolved.saveMod,
-          ac: resolved.dc,
-          hit: resolved.success,
+          value: save.saveD20,
+          modifier: save.saveMod,
+          ac: save.dc,
+          hit: save.success,
           kind: 'save',
         }
-        if (resolved.finalDamage > 0) {
-          applyFullDamage(targetChar.id, resolved.finalDamage)
+        if (finalDamage > 0) {
+          applyFullDamage(targetChar.id, finalDamage)
         }
       } else if (wantsDodge != null) {
         const estimatedDamage = Math.max(1, result.damage ?? result.attack?.total ?? 0)
@@ -4394,6 +4586,10 @@ export default function MapsPage() {
       onComplete()
       return
     }
+    const completeIfCombatContinues = () => {
+      if (hasCombatOutcomeNow()) return
+      onComplete()
+    }
 
     const chars = useCharacterStore.getState().characters
     const targetToken = activeMap.tokens.find((t) => t.id === result.targetTokenId)
@@ -4403,7 +4599,7 @@ export default function MapsPage() {
       (targetChar.currentHp > 0 &&
         !pendingDeathKeysRef.current.has(`${result.targetTokenId}:${targetChar.id}`))
     if (targetChar && !targetAlive) {
-      onComplete()
+      completeIfCombatContinues()
       return
     }
     const damageType = result.damageType ?? 'physical'
@@ -4418,7 +4614,7 @@ export default function MapsPage() {
       if (isDM && activeMap) {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
         const expiresAt = Date.now() + 15000
-        pendingSharedDodgeRef.current = { id, result, targetCharId: targetChar!.id, onComplete }
+        pendingSharedDodgeRef.current = { id, result, targetCharId: targetChar!.id, onComplete: completeIfCombatContinues }
         void saveSharedResource<SharedDodgeState>('dodge', {
           id,
           mapId: activeMap.id,
@@ -4430,13 +4626,13 @@ export default function MapsPage() {
         })
         return
       }
-      setDodgePrompt({ result, targetChar: targetChar!, onComplete })
+      setDodgePrompt({ result, targetChar: targetChar!, onComplete: completeIfCombatContinues })
       return
     }
 
     const autoAccept =
       !!targetChar && damageType !== 'aoe' && result.damage != null && result.damage > 0
-    void finishEnemyAttack(result, targetChar, autoAccept ? false : null).then(onComplete)
+    void finishEnemyAttack(result, targetChar, autoAccept ? false : null).then(completeIfCombatContinues)
   }
 
   const handleDodgeChoice = (wantsDodge: boolean) => {
@@ -4523,6 +4719,29 @@ export default function MapsPage() {
       })
       return
     }
+  }
+
+  const handleSharedStableMindChoice = async (useStableMind: boolean) => {
+    if (!sharedStableMindPrompt || !activeMap) return
+    const prompt = sharedStableMindPrompt
+    suppressedStableMindPromptIdsRef.current.add(prompt.id)
+    setSharedStableMindPrompt(null)
+    await saveSharedResource<SharedStableMindState>('stable-mind', {
+      id: prompt.id,
+      mapId: activeMap.id,
+      status: 'answered',
+      targetCharId: prompt.targetChar.id,
+      targetName: prompt.targetChar.name,
+      fullDamage: prompt.fullDamage,
+      damageAfterSave: prompt.damageAfterSave,
+      saveD20: prompt.saveD20,
+      saveMod: prompt.saveMod,
+      saveTotal: prompt.saveTotal,
+      dc: prompt.dc,
+      useStableMind,
+      expiresAt: prompt.expiresAt,
+      updatedAt: Date.now(),
+    })
   }
 
   const scheduleEnemyTurn = async (enemy: Token) => {
@@ -5609,6 +5828,46 @@ export default function MapsPage() {
                     className="rounded-lg bg-sky-500/25 px-4 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-500/35"
                   >
                     尝试闪避
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {sharedStableMindPrompt && (
+            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/55 backdrop-blur-sm">
+              <div
+                role="dialog"
+                aria-labelledby="shared-stable-mind-prompt-title"
+                className="relative mx-4 w-full max-w-md rounded-2xl border border-violet-400/35 bg-void-950/95 p-5 shadow-2xl"
+              >
+                {sharedStableMindPrompt.expiresAt != null && (
+                  <div className="absolute right-5 top-5 rounded-full border border-violet-300/40 bg-violet-500/15 px-2 py-0.5 text-xs font-bold tabular-nums text-violet-100">
+                    {Math.max(0, Math.ceil((sharedStableMindPrompt.expiresAt - sharedDodgeNow) / 1000))}s
+                  </div>
+                )}
+                <h3 id="shared-stable-mind-prompt-title" className="text-lg font-semibold text-violet-100">
+                  残影脱身
+                </h3>
+                <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-300">
+                  {`${sharedStableMindPrompt.targetChar.name} 敏捷豁免成功：${sharedStableMindPrompt.saveD20}+${sharedStableMindPrompt.saveMod}=${sharedStableMindPrompt.saveTotal} vs DC ${sharedStableMindPrompt.dc}。\n仍将受到 ${sharedStableMindPrompt.damageAfterSave} 点伤害。\n是否消耗 1 AP 和 1 次残影脱身，抵消本次全部伤害？`}
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSharedStableMindChoice(false)}
+                    className="rounded-lg border border-slate-600/60 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700/80"
+                  >
+                    不发动
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="shared-stable-mind-use"
+                    data-stable-mind-id={sharedStableMindPrompt.id}
+                    onClick={() => handleSharedStableMindChoice(true)}
+                    className="rounded-lg bg-violet-500/25 px-4 py-2 text-sm font-semibold text-violet-100 hover:bg-violet-500/35"
+                  >
+                    发动残影脱身
                   </button>
                 </div>
               </div>

@@ -67,26 +67,39 @@ async function getState<T>(request: APIRequestContext, name: string): Promise<T>
   return (await res.json()) as T
 }
 
-async function seedEncounter(request: APIRequestContext, mapId: string, opts: { playerFirst?: boolean } = {}) {
+async function seedEncounter(
+  request: APIRequestContext,
+  mapId: string,
+  opts: {
+    playerFirst?: boolean
+    redDragonFirst?: boolean
+    heroPatch?: Record<string, unknown>
+    heroTraits?: Array<Record<string, unknown>>
+    enemyApByToken?: Record<string, { current: number; max: number }>
+  } = {},
+) {
   const now = Date.now()
   await putState(request, 'characters', {
     characters: [
       heroCharacter(
-        opts.playerFirst
-          ? {
-              traits: [
-                {
-                  id: 'precise-regression',
-                  name: '精准打击',
-                  level: 1,
-                  uses: 1,
-                  maxUses: 1,
-                  description: '使得下一次攻击必定造成重击。',
-                  featureKey: 'preciseStrike',
-                },
-              ],
-            }
-          : {},
+        {
+          ...(opts.heroPatch ?? {}),
+          traits:
+            opts.heroTraits ??
+            (opts.playerFirst
+              ? [
+                  {
+                    id: 'precise-regression',
+                    name: '精准打击',
+                    level: 1,
+                    uses: 1,
+                    maxUses: 1,
+                    description: '使得下一次攻击必定造成重击。',
+                    featureKey: 'preciseStrike',
+                  },
+                ]
+              : []),
+        },
       ),
     ],
     selectedId: 'hero-regression',
@@ -163,7 +176,13 @@ async function seedEncounter(request: APIRequestContext, mapId: string, opts: { 
     active: true,
     round: 1,
     initiativeIndex: 0,
-    initiativeOrder: opts.playerFirst
+    initiativeOrder: opts.redDragonFirst
+      ? [
+          { tokenId: 'red-dragon-regression', label: 'E2E Red Dragon Wyrmling', emoji: '🐉', color: '#ef4444', roll: 20 },
+          { tokenId: 'player-regression', label: 'E2E Adventurer', emoji: '🧝', color: '#34d399', roll: 10 },
+          { tokenId: 'goblin-regression', label: 'E2E Goblin', emoji: '👺', color: '#f87171', roll: 5 },
+        ]
+      : opts.playerFirst
       ? [
           { tokenId: 'player-regression', label: 'E2E Adventurer', emoji: '🧝', color: '#34d399', roll: 20 },
           { tokenId: 'goblin-regression', label: 'E2E Goblin', emoji: '👺', color: '#f87171', roll: 10 },
@@ -174,7 +193,7 @@ async function seedEncounter(request: APIRequestContext, mapId: string, opts: { 
           { tokenId: 'player-regression', label: 'E2E Adventurer', emoji: '🧝', color: '#34d399', roll: 10 },
           { tokenId: 'red-dragon-regression', label: 'E2E Red Dragon Wyrmling', emoji: '🐉', color: '#ef4444', roll: 5 },
         ],
-    enemyApByToken: {
+    enemyApByToken: opts.enemyApByToken ?? {
       'goblin-regression': { current: 2, max: 2 },
       'red-dragon-regression': { current: 2, max: 2 },
     },
@@ -282,6 +301,128 @@ test('player precise strike activation is accepted by DM authority', async ({ br
       { timeout: 20_000 },
     )
     .toBe('accepted')
+
+  await context.close()
+})
+
+test('stable mind is offered after a successful dex save and prevents damage', async ({ browser, request }) => {
+  const mapId = `e2e-stable-mind-${Date.now()}`
+  await seedEncounter(request, mapId, {
+    redDragonFirst: true,
+    enemyApByToken: {
+      'goblin-regression': { current: 2, max: 2 },
+      'red-dragon-regression': { current: 1, max: 1 },
+    },
+    heroPatch: {
+      abilities: { str: 10, dex: 100, con: 50, int: 10, wis: 10, cha: 10 },
+      maxHp: 31,
+      currentHp: 31,
+      currentAP: 2,
+    },
+    heroTraits: [
+      {
+        id: 'stable-mind-regression',
+        name: '残影脱身',
+        level: 1,
+        uses: 1,
+        maxUses: 1,
+        description: '敏捷豁免成功后可消耗 1 AP 抵消伤害。',
+        featureKey: 'stableMind',
+      },
+    ],
+  })
+
+  const context = await browser.newContext()
+  const dm = await context.newPage()
+  const player = await context.newPage()
+  await Promise.all([
+    dm.goto(`${DM}/maps`, { waitUntil: 'domcontentloaded' }),
+    player.goto(`${PLAYER}/maps`, { waitUntil: 'domcontentloaded' }),
+  ])
+
+  await expect(player.getByTestId('shared-stable-mind-use')).toBeVisible({ timeout: 45_000 })
+
+  const before = await getState<{
+    characters: Array<{ id: string; currentHp: number; currentAP: number }>
+  }>(request, 'characters')
+  const hpBefore = before.characters.find((item) => item.id === 'hero-regression')?.currentHp
+  expect(hpBefore).toBeGreaterThan(0)
+
+  await player.getByTestId('shared-stable-mind-use').click()
+
+  await expect
+    .poll(
+      async () => {
+        const characters = await getState<{
+          characters: Array<{
+            id: string
+            currentHp: number
+            currentAP: number
+            traits?: Array<{ featureKey?: string; uses: number }>
+          }>
+        }>(request, 'characters')
+        const hero = characters.characters.find((item) => item.id === 'hero-regression')
+        const stableMind = hero?.traits?.find((trait) => trait.featureKey === 'stableMind')
+        return { hp: hero?.currentHp, ap: hero?.currentAP, uses: stableMind?.uses }
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual({ hp: hpBefore, ap: 1, uses: 0 })
+
+  await expect
+    .poll(
+      async () => {
+        const log = await getState<{ entries: Array<{ text: string }> }>(request, 'combat-log')
+        return log.entries.map((entry) => entry.text).join('\n')
+      },
+      { timeout: 20_000 },
+    )
+    .toContain('残影脱身')
+
+  await context.close()
+})
+
+test('combat stops before extra monster AP after all players are defeated', async ({ browser, request }) => {
+  const mapId = `e2e-defeat-stop-${Date.now()}`
+  await seedEncounter(request, mapId, {
+    heroPatch: {
+      abilities: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+      currentHp: 1,
+      currentAP: 2,
+    },
+  })
+
+  const context = await browser.newContext()
+  const dm = await context.newPage()
+  const player = await context.newPage()
+  await Promise.all([
+    dm.goto(`${DM}/maps`, { waitUntil: 'domcontentloaded' }),
+    player.goto(`${PLAYER}/maps`, { waitUntil: 'domcontentloaded' }),
+  ])
+
+  await expect(player.getByRole('button', { name: '承受伤害' })).toBeVisible({ timeout: 45_000 })
+  await player.getByRole('button', { name: '承受伤害' }).click()
+
+  await expect
+    .poll(
+      async () => {
+        const combat = await getState<{ active?: boolean; mapId?: string }>(request, 'combat')
+        return combat.mapId === mapId ? combat.active : true
+      },
+      { timeout: 45_000 },
+    )
+    .toBe(false)
+
+  const combat = await getState<{
+    enemyApByToken?: Record<string, { current: number; max: number }>
+  }>(request, 'combat')
+  expect(combat.enemyApByToken?.['goblin-regression']?.current).toBeUndefined()
+
+  const log = await getState<{ entries: Array<{ text: string }> }>(request, 'combat-log')
+  const text = log.entries.map((entry) => entry.text).join('\n')
+  expect(text).not.toContain('继续攻击')
+  expect(text).not.toContain('继续移动')
+  expect(text).not.toContain('进入第 2 回合')
 
   await context.close()
 })
