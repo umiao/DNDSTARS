@@ -1,6 +1,6 @@
 import { canWriteSharedState } from './appMode'
 
-function sharedApiCandidates(): string[] {
+function configuredApiBases(): string[] | null {
   const configured = import.meta.env.VITE_SHARED_API_BASES as string | undefined
   if (configured) {
     return configured
@@ -9,29 +9,35 @@ function sharedApiCandidates(): string[] {
       .filter(Boolean)
       .filter((value, index, all) => all.indexOf(value) === index)
   }
+  return null
+}
+
+function defaultDmApiBase(): string {
+  const port = window.location.port.startsWith('617') ? '6173' : '5173'
+  return `${window.location.protocol}//${window.location.hostname}:${port}/api`
+}
+
+function sameOriginApiBase(): string {
   const sameOrigin = `${window.location.origin}/api`
-  return [
-    'http://127.0.0.1:5173/api',
-    sameOrigin,
-    'http://127.0.0.1:5174/api',
-  ].filter((value, index, all) => all.indexOf(value) === index)
+  return sameOrigin
+}
+
+function sharedApiCandidates(): string[] {
+  const configured = configuredApiBases()
+  if (configured) return configured
+  return [defaultDmApiBase(), sameOriginApiBase()].filter((value, index, all) => all.indexOf(value) === index)
+}
+
+function sharedWriteApiCandidates(): string[] {
+  const configured = configuredApiBases()
+  if (configured) return configured
+  return [defaultDmApiBase()]
 }
 
 function sharedEventApiCandidates(): string[] {
-  const configured = import.meta.env.VITE_SHARED_API_BASES as string | undefined
-  if (configured) {
-    return configured
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .filter((value, index, all) => all.indexOf(value) === index)
-  }
-  const sameOrigin = `${window.location.origin}/api`
-  return [
-    'http://127.0.0.1:5173/api',
-    sameOrigin,
-    'http://127.0.0.1:5174/api',
-  ].filter((value, index, all) => all.indexOf(value) === index)
+  const configured = configuredApiBases()
+  if (configured) return configured
+  return [defaultDmApiBase()]
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T | null> {
@@ -77,7 +83,7 @@ export async function saveSharedResource<T>(name: string, data: T): Promise<void
     if ((name === 'characters' || name === 'maps') && (await sharedCombatIsActive())) return
   }
   await Promise.allSettled(
-    sharedApiCandidates().map((api) =>
+    sharedWriteApiCandidates().map((api) =>
       fetch(`${api}/state/${name}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -160,7 +166,7 @@ export async function getSharedImage(id: string): Promise<Blob | undefined> {
 export async function deleteSharedImage(id: string): Promise<void> {
   if (!canWriteSharedState()) return
   await Promise.allSettled(
-    sharedApiCandidates().map((api) =>
+    sharedWriteApiCandidates().map((api) =>
       fetch(`${api}/images/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     ),
   )

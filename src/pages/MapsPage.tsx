@@ -146,7 +146,14 @@ import {
   STUN_STATUS_LABEL,
 } from '../lib/stun'
 import { getSkillRank, skillGrantsStun } from '../lib/archerSkillTree'
-import { getPlayerCharacter, playerViewCharacters } from '../lib/playerView'
+import { modeFromPort } from '../lib/appMode'
+import {
+  currentPlayerSlot,
+  getAssignedPlayerCharacterId,
+  getPlayerCharacter,
+  playerViewCharacters,
+  PLAYER_ASSIGNMENT_EVENT,
+} from '../lib/playerView'
 import { proficiencyBonus } from '../lib/dnd'
 
 type Mode = 'dm' | 'player'
@@ -323,14 +330,6 @@ interface SharedCombatLogState {
   updatedAt: number
 }
 
-function modeFromPort(): Mode | null {
-  const envMode = import.meta.env.VITE_APP_MODE
-  if (envMode === 'dm' || envMode === 'player') return envMode
-  if (window.location.port === '5173') return 'dm'
-  if (window.location.port === '5174') return 'player'
-  return null
-}
-
 type StatusType = 'burning' | 'poison'
 type CombatLogEntry = {
   id: number
@@ -457,6 +456,7 @@ export default function MapsPage() {
   const [selectedCharacterTokenId, setSelectedCharacterTokenId] = useState<string | null>(null)
   const [activeCharId, setActiveCharId] = useState<string | null>(null)
   const [charPanel, setCharPanel] = useState<CharDockPanel | null>(null)
+  const [playerAssignmentTick, setPlayerAssignmentTick] = useState(0)
   const [measureMode, setMeasureMode] = useState(false)
   const [deleteSelectMode, setDeleteSelectMode] = useState(false)
   const [showBar, setShowBar] = useState(true) // 顶部控件浮层是否显示
@@ -969,6 +969,8 @@ export default function MapsPage() {
 
   const isDM = mode === 'dm'
   const forcedMode = modeFromPort()
+  const playerSlot = currentPlayerSlot()
+  const assignedCharacterId = isDM ? null : getAssignedPlayerCharacterId(playerSlot)
   const activeMap = maps.find((m) => m.id === selectedId) ?? maps[0] ?? null
   const selectedToken = activeMap?.tokens.find((t) => t.id === selectedTokenId) ?? null
   const selectedCharacterToken = activeMap?.tokens.find((t) => t.id === selectedCharacterTokenId) ?? null
@@ -1260,6 +1262,16 @@ export default function MapsPage() {
     if (forcedMode && mode !== forcedMode) setMode(forcedMode)
   }, [forcedMode, mode])
 
+  useEffect(() => {
+    const bump = () => setPlayerAssignmentTick((value) => value + 1)
+    window.addEventListener(PLAYER_ASSIGNMENT_EVENT, bump)
+    window.addEventListener('storage', bump)
+    return () => {
+      window.removeEventListener(PLAYER_ASSIGNMENT_EVENT, bump)
+      window.removeEventListener('storage', bump)
+    }
+  }, [])
+
   const currentInitiativeToken =
     combatActive && initiativeOrder.length > 0
       ? activeMap?.tokens.find((t) => t.id === initiativeOrder[initiativeIndex]?.tokenId)
@@ -1270,12 +1282,12 @@ export default function MapsPage() {
     isTokenAlive(currentInitiativeToken, characters)
 
   const linkedIds = new Set((activeMap?.tokens ?? []).map((t) => t.characterId).filter(Boolean) as string[])
-  const linkedPlayerChars = (activeMap?.tokens ?? [])
-    .filter((t) => t.type === 'player' && t.characterId)
-    .map((t) => characters.find((c) => c.id === t.characterId))
-    .filter((c): c is Character => !!c)
-  const playerVisibleChars = playerViewCharacters(characters)
-  const visibleChars = isDM ? [] : (playerVisibleChars.length > 0 ? playerVisibleChars : linkedPlayerChars)
+  void playerAssignmentTick
+  const playerVisibleChars = playerViewCharacters(characters, {
+    slot: playerSlot,
+    assignedCharacterId,
+  })
+  const visibleChars = isDM ? [] : playerVisibleChars
   const railChars =
     visibleChars.filter((c) => linkedIds.has(c.id)).length > 0
       ? visibleChars.filter((c) => linkedIds.has(c.id))
@@ -1295,7 +1307,11 @@ export default function MapsPage() {
       ? characters.find((c) => c.id === currentInitiativeToken.characterId)
       : undefined
 
-  const playerChar = getPlayerCharacter(characters) ?? visibleChars[0]
+  const playerChar =
+    getPlayerCharacter(characters, {
+      slot: playerSlot,
+      assignedCharacterId,
+    }) ?? visibleChars[0]
 
   useEffect(() => {
     if (!activeMap) return

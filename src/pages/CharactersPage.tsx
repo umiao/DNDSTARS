@@ -6,8 +6,14 @@ import CharacterSheet from '../components/character/CharacterSheet'
 import DMRoster from '../components/character/DMRoster'
 import ClassCatalog from '../components/character/ClassCatalog'
 import { useCharacterStore } from '../store/characters'
-import { modeFromPort } from '../lib/appMode'
-import { getPlayerCharacter } from '../lib/playerView'
+import { modeFromPort, playerSlotLabel } from '../lib/appMode'
+import {
+  currentPlayerSlot,
+  getAssignedPlayerCharacterId,
+  playerViewCharacters,
+  PLAYER_ASSIGNMENT_EVENT,
+  setAssignedPlayerCharacterId,
+} from '../lib/playerView'
 import { characterExportFileName, makeCharacterExport, parseCharacterExport } from '../lib/characterTransfer'
 
 type Mode = 'player' | 'dm'
@@ -24,6 +30,12 @@ export default function CharactersPage() {
   const select = useCharacterStore((s) => s.select)
   const add = useCharacterStore((s) => s.add)
   const importCharacter = useCharacterStore((s) => s.importCharacter)
+  const update = useCharacterStore((s) => s.update)
+  const [assignmentTick, setAssignmentTick] = useState(0)
+  const isDM = mode === 'dm'
+  const playerSlot = currentPlayerSlot()
+  const assignedCharacterId = isDM ? null : getAssignedPlayerCharacterId(playerSlot)
+  const assignableList = characters.filter((c) => c.visibleToPlayers !== false)
 
   const openCreateDialog = () => {
     setNewCharName('新冒险者')
@@ -38,17 +50,34 @@ export default function CharactersPage() {
     if (forcedMode) setMode(forcedMode)
   }, [forcedMode])
 
+  useEffect(() => {
+    const bump = () => setAssignmentTick((value) => value + 1)
+    window.addEventListener(PLAYER_ASSIGNMENT_EVENT, bump)
+    window.addEventListener('storage', bump)
+    return () => {
+      window.removeEventListener(PLAYER_ASSIGNMENT_EVENT, bump)
+      window.removeEventListener('storage', bump)
+    }
+  }, [])
+
   const confirmCreate = () => {
     const id = add(newCharName.trim() || 'New Adventurer')
+    if (!isDM) {
+      setAssignedPlayerCharacterId(id, playerSlot)
+      update(id, { player: playerSlotLabel(playerSlot), visibleToPlayers: true })
+    }
     select(id)
     setShowCreate(false)
   }
 
-  const isDM = mode === 'dm'
-  const playerChar = getPlayerCharacter(characters)
+  void assignmentTick
+  const playerVisibleList = playerViewCharacters(characters, {
+    slot: playerSlot,
+    assignedCharacterId,
+  })
   const visibleList = isDM
     ? characters
-    : characters.filter((c) => c.visibleToPlayers !== false || c.id === playerChar?.id)
+    : playerVisibleList
   const activeId =
     selectedId && visibleList.some((c) => c.id === selectedId) ? selectedId : visibleList[0]?.id ?? null
   const activeCharacter = activeId ? visibleList.find((c) => c.id === activeId) ?? null : null
@@ -74,6 +103,10 @@ export default function CharactersPage() {
       const character = parseCharacterExport(parsed)
       if (!character) throw new Error('Invalid character JSON')
       const id = importCharacter(character)
+      if (!isDM) {
+        setAssignedPlayerCharacterId(id, playerSlot)
+        update(id, { player: playerSlotLabel(playerSlot), visibleToPlayers: true })
+      }
       select(id)
     } catch (error) {
       console.error('[character-import-failed]', error)
@@ -129,6 +162,28 @@ export default function CharactersPage() {
               </button>
             </div>
 
+            {!isDM && (
+              <label className="glass flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-slate-300">
+                <span className="text-xs font-semibold text-slate-500">{playerSlotLabel(playerSlot)}</span>
+                <select
+                  value={assignedCharacterId ?? ''}
+                  onChange={(e) => {
+                    setAssignedPlayerCharacterId(e.target.value || null, playerSlot)
+                    if (e.target.value) select(e.target.value)
+                  }}
+                  className="min-w-36 rounded-lg border border-white/10 bg-void-900/70 px-2 py-1 text-sm text-slate-100 outline-none focus:border-arcane-500"
+                  title="绑定本玩家端控制的角色"
+                >
+                  <option value="">未绑定角色</option>
+                  {assignableList.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
             {(isDM || forcedMode === 'player') && (
               <>
                 <button
@@ -170,7 +225,11 @@ export default function CharactersPage() {
         <EmptyState
           icon={Users}
           title={isDM ? '还没有角色' : '没有可查看的角色'}
-          description={isDM ? '点击右上角“新建角色”创建第一张角色卡。' : 'DM 尚未为你分配可操控的角色。'}
+          description={
+            isDM
+              ? '点击右上角“新建角色”创建第一张角色卡。'
+              : '请在右上角绑定本玩家端控制的角色，或让 DM 将角色玩家字段设为对应玩家。'
+          }
         />
       ) : isDM ? (
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[260px_1fr]">
