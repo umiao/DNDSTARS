@@ -26,7 +26,7 @@ import {
   type MetaChoiceKey,
   type TraitChoiceOption,
 } from '../lib/traitRegistry'
-import { beginCalmMindTurn, calmBreathState, initCalmMindForCombat, isCalmMindActive, triggerOutOfBreath, tickOutOfBreathOnEndTurn } from '../lib/calmMind'
+import { beginCalmMindTurn, initCalmMindForCombat, isCalmMindActive, triggerOutOfBreath, tickOutOfBreathOnEndTurn } from '../lib/calmMind'
 import { syncArcherCombatSkills } from '../lib/skillTreeSync'
 import { ensureDefaultEquipment, isMagicDamageSkill, refreshKnownEquipment, syncCombatDerivedStats } from '../lib/combatStats'
 
@@ -50,22 +50,8 @@ interface SharedCharactersState {
   updatedAt?: number
 }
 
-function rollD4(count: number): number {
-  return Array.from({ length: Math.max(0, count) }, () => 1 + Math.floor(Math.random() * 4)).reduce(
-    (sum, value) => sum + value,
-    0,
-  )
-}
-
-function applyStillWatersHealingOnBreathShift(before: Character, after: Character): Character {
-  const trait = findClassTrait(after, 'swiftShot')
-  if (!trait) return after
-  const beforeState = calmBreathState(before)
-  const afterState = calmBreathState(after)
-  if (beforeState === afterState || beforeState === 'none' || afterState === 'none') return after
-  const heal = rollD4(trait.level)
-  if (heal <= 0 || after.currentHp <= 0) return after
-  return { ...after, currentHp: Math.min(after.maxHp, after.currentHp + heal) }
+function applyStillWatersHealingOnBreathShift(_before: Character, after: Character): Character {
+  return after
 }
 
 function mergePlayerWritableCharacter(local: Character, shared: Character): Character {
@@ -1019,7 +1005,7 @@ export const useCharacterStore = create<CharacterState>()(
           if (!c || !trait || trait.uses <= 0) return false
           updateChar(charId, (ch) => ({
             ...ch,
-            combatBuffs: { ...ch.combatBuffs, eagleEyeTurns: 2 },
+            combatBuffs: { ...ch.combatBuffs, eagleEyeTurns: 3 },
             traits: ch.traits.map((t) =>
               t.featureKey === 'eagleEye'
                 ? { ...t, uses: Math.max(0, t.uses - 1) }

@@ -168,7 +168,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
   },
   {
     key: 'stableMind',
-    name: '残影脱身',
+    name: '稳定心神',
     usage: 'perLongRest',
     description:
       '当你进行敏捷豁免成功，但仍会受到伤害后，可以消耗 1 AP 取消本次攻击受到的所有伤害。每提升 1 级特性，长休可额外使用 1 次。',
@@ -179,7 +179,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '鹰眼',
     usage: 'perLongRest',
     description:
-      '2 回合内将你的敏捷值临时增加 {value} 点；每提升 1 级特性，提升的临时敏捷值额外增加 5 点。长休可使用 2 次，激活后持续 2 回合。',
+      '3 回合内将你的敏捷值临时增加 {value} 点；每提升 1 级特性，提升的临时敏捷值额外增加 5 点。',
     maxUsesAtRank: () => 2,
     valueAtRank: (r) => 10 + (r - 1) * 5,
   },
@@ -211,7 +211,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
   {
     key: 'wildernessGuide',
     name: '荒野指引者',
-    usage: 'passive',
+    usage: 'perLongRest',
     description:
       '你熟悉自然之道：白天求生鉴定具有优势，野外察觉鉴定获得优势。若拥有黑暗视觉，夜晚求生鉴定同样获得优势。该特性长休可使用 1 次特殊指引；每提升 1 级可额外使用 1 次。',
     maxUsesAtRank: perLongRestPlusOne,
@@ -229,7 +229,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '无声起弦',
     usage: 'passive',
     description:
-      '若你在战斗中先攻顺序第一个行动，则你的攻击额外造成 {dice}D6 点同类型伤害。每提升 1 级特性，额外造成 1D6 点伤害。',
+      '若你在战斗中的先攻顺序第一个行动，则本场战斗的第一次攻击额外造成 {dice}D6 点同类型伤害。每提升 1 级特性，额外造成 1D6 点伤害。',
     diceAtRank: diceEqualsRank,
   },
   // —— 逐风者 ——
@@ -246,7 +246,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '静心',
     usage: 'passive',
     description:
-      '当你在回合开始时未处于气喘状态时，获得静心状态，伤害骰增加 {dice}D6。每当你受到攻击或者消耗 AP 移动后，失去静心状态并获得气喘状态，直至你下一回合结束。每提升 1 级增加 1D6。',
+      '当你未处于气喘状态时，获得静心状态，每次攻击的伤害骰增加 {dice}D6。每当你受到攻击或者主动移动后，获得气喘状态，你的所有攻击获得劣势，直至你下一回合结束。每提升 1 级增加 1D6。',
     diceAtRank: diceEqualsRank,
   },
   {
@@ -298,11 +298,11 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
   },
   {
     key: 'swiftShot',
-    name: '波澜不惊',
-    usage: 'passive',
+    name: '迅捷射击',
+    usage: 'unlimited',
     description:
-      '当战斗开始时，默认处于静心状态。每当你切换静心/气喘状态时，回复 {dice}D4 点生命值。每提升 1 级，额外回复 1D4 点生命值。',
-    diceAtRank: diceEqualsRank,
+      '在你的回合内，你可以无需消耗 AP 移动至多 {range} 尺而不失去静心状态。每提升 1 级，额外获得 5 尺移动。',
+    rangeAtRank: (r) => 10 + (r - 1) * 5,
   },
   {
     key: 'huntingCombo',
@@ -322,6 +322,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     key: 'vengeanceBlood',
     name: '复仇之血',
     usage: 'perLongRest',
+    deprecated: true,
     description:
       '每当你对带狩猎印记的生物造成伤害时，可回复等同于本次伤害一半的生命值。长休前 {uses} 次；每次升级 +1 次。',
     maxUsesAtRank: perLongRestPlusOne,
@@ -331,7 +332,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '符文箭',
     usage: 'passive',
     description:
-      '你射出的魔法箭矢不再消耗箭矢数量。每场战斗开始前，可将一项造成魔法伤害的技能的冷却调整为 0。',
+      '在每场战斗开始前，你可以将一项会造成魔法伤害的技能的冷却值调整为 0。',
   },
   {
     key: 'focusedSpirit',
@@ -354,14 +355,14 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '心如止水',
     usage: 'passive',
     description:
-      '当你保持静心状态时，周围 15 尺内友方单位获得 10 点临时生命值（每提升 1 级额外 +10），且你不再获得气喘状态。',
+      '当你获得静心状态时，周围 15 尺内的友方单位获得 10 点临时生命值。每提升 1 级，额外获得 10 点临时生命值。',
   },
   {
     key: 'finale',
     name: '曲终',
     usage: 'perCombat',
     description:
-      '额外消耗 1 AP 激活：当下一名敌对生物的狩猎印记叠加至 4 层时，其立刻受到 6D10 点力场伤害并被晕眩，移除所有狩猎印记。每提升 1 级增加 1D8 点伤害。',
+      '消耗 2 AP 发动：当一名敌对生物的狩猎印记叠加至 4 层时，其立刻受到 6D10 点力场伤害并被晕眩，移除所有狩猎印记。每提升 1 级增加 1D8 点伤害。',
     maxUsesAtRank: perCombatPlusOne,
   },
   {
@@ -377,7 +378,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '疾风舞者',
     usage: 'perLongRest',
     description:
-      '当你将要进入负面状态而进行豁免鉴定时，豁免 +3；豁免成功后可不消耗 AP 释放一个已准备好的飞空连踢。长休前 {uses} 次；每次升级 +1 次。',
+      '当你将要进入负面状态而进行豁免鉴定成功后，你可以消耗 1 点气将飞空连击的 CD -1；若飞空连击已准备就绪，则可不消耗 AP 释放它。长休前 {uses} 次；每次升级 +1 次。',
     maxUsesAtRank: perLongRestPlusOne,
   },
   {
@@ -385,7 +386,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '起飞',
     usage: 'passive',
     description:
-      '当你攻击处于击飞状态的敌人时，强化旋风飞腿，额外附加 {dice}D6 点伤害。每提升 1 级 +1D6，最高 3D6。',
+      '当你攻击一名处于击飞状态的敌人时，你可以消耗 1 点气强化旋风飞腿，额外附带 {dice}D6 点伤害。每提升 1 级增加 1D6，最多 3D6。',
     diceAtRank: diceCap3,
   },
   {
@@ -408,8 +409,9 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '迷幻舞步',
     usage: 'perLongRest',
     description:
-      '消耗 1 点气在原地起舞。至少 1 名能看见你的敌人进行感知豁免，失败则消耗所有移动力至你身前 10 尺处，直至其下回合结束或受到伤害。长休 1 次；每次升级 +1 目标，最多 3 个。',
-    maxUsesAtRank: perLongRestPlusOne,
+      '消耗 1 点气在原地起舞。至多 {value} 名能看到你的敌对生物需要通过一次感知豁免，否则被你的舞步迷幻并移动至你身前 10 尺处观看，直至其下回合开始或受到伤害。该生物被魅惑期间无法闪避，豁免鉴定自动失败。每日 1 次；每次升级目标数量 +1，最多 3 个。',
+    maxUsesAtRank: () => 1,
+    valueAtRank: (r) => Math.min(3, r),
   },
   {
     key: 'flexibleBody',
@@ -421,8 +423,8 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
   {
     key: 'waterWalk',
     name: '凌波微步',
-    usage: 'passive',
-    description: '步履轻盈且不发出声响。隐匿鉴定获得优势，永久获得 3 点敏捷值提升。',
+    usage: 'unlimited',
+    description: '消耗 1 点气发动。你可以立刻移动至多 15 尺，该移动不消耗 AP，且可以越过中型或以下体型的敌人。若你在本回合越过了任何目标，则你对该目标的下一次攻击获得优势。',
   },
   {
     key: 'heavyFist',
@@ -443,7 +445,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '命运枷锁',
     usage: 'unlimited',
     description:
-      '你对敌对角色施加的控制即将结束时，可消耗 1 点气令其在回合结束时再进行一次对应豁免；豁免失败则效果时间增加 1 回合。',
+      '你对敌对角色施加控制时，可以消耗 1 点气令其再进行一次对应属性的豁免；若豁免失败，其对应状态的层数增加 1。',
   },
   {
     key: 'showtime',
@@ -456,11 +458,9 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
   {
     key: 'windBlade',
     name: '风刃乱舞',
-    usage: 'perCombat',
+    usage: 'unlimited',
     description:
-      '持续 30 秒，消耗 3 AP 与魔力，召唤风刃造成 6D8 穿刺伤害（豁免成功减半）。每提升 1 级 +2D8，最高 8D8。',
-    maxUsesAtRank: perCombatPlusOne,
-    diceAtRank: (r) => Math.min(8, 6 + (r - 1) * 2),
+      '消耗 1 点气，直至你的下回合开始前，你在回合外使用闪避不消耗 AP。',
   },
   {
     key: 'transcendentSoul',
@@ -474,7 +474,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '稳弦',
     usage: 'passive',
     deprecated: true,
-    description: '（已废弃）由「残影脱身」取代。'
+    description: '（已废弃）由「稳定心神」取代。'
   },
   {
     key: 'swiftStep',
@@ -585,7 +585,7 @@ export const TRAIT_CHOICE_GROUPS: TraitChoiceGroup[] = [
   {
     id: 'archer-lv3',
     title: '弓手 · LV3 职业特性',
-    hint: '请选择 1 项：残影脱身、鹰眼。',
+    hint: '请选择 1 项：稳定心神、鹰眼。',
     minLevel: 3,
     pickCount: 1,
     applies: (c) => isBaseArcher(c.charClass),
@@ -634,10 +634,10 @@ export const TRAIT_CHOICE_GROUPS: TraitChoiceGroup[] = [
     ),
   },
   {
-    id: 'windrunner-lv18',
-    title: '逐风者 · LV18 职业特性',
+    id: 'windrunner-lv20',
+    title: '逐风者 · LV20 职业特性',
     hint: '请选择 1 项：狩猎印记、魔能吞噬、安定心神。',
-    minLevel: 18,
+    minLevel: 20,
     pickCount: 1,
     applies: (c) => isWindrunner(c.charClass),
     options: ['huntingMark', 'arcaneDevour', 'calmSpirit'].map((k) =>
@@ -645,35 +645,24 @@ export const TRAIT_CHOICE_GROUPS: TraitChoiceGroup[] = [
     ),
   },
   {
-    id: 'windrunner-lv21',
-    title: '逐风者 · LV21 职业特性',
-    hint: '请选择 1 项：追踪箭、爆裂箭。',
-    minLevel: 21,
-    pickCount: 1,
-    applies: (c) => isWindrunner(c.charClass),
-    options: ['trackingArrow', 'explosiveArrow'].map((k) =>
-      feat(k as ClassFeatureKey, defOf(k as ClassFeatureKey)),
-    ),
-  },
-  {
     id: 'windrunner-lv25',
     title: '逐风者 · LV25 职业特性',
-    hint: '请选择 1 项：迅捷射击、狩猎连击、迅捷回溯。',
+    hint: '请选择 1 项：追踪箭、爆裂箭矢、符文箭。',
     minLevel: 25,
     pickCount: 1,
     applies: (c) => isWindrunner(c.charClass),
-    options: ['swiftShot', 'huntingCombo', 'swiftRecall'].map((k) =>
+    options: ['trackingArrow', 'explosiveArrow', 'runeArrow'].map((k) =>
       feat(k as ClassFeatureKey, defOf(k as ClassFeatureKey)),
     ),
   },
   {
     id: 'windrunner-lv30',
     title: '逐风者 · LV30 职业特性',
-    hint: '请选择 1 项：复仇之血、符文箭。',
+    hint: '请选择 1 项：迅捷射击、狩猎连击、迅捷回溯。',
     minLevel: 30,
     pickCount: 1,
     applies: (c) => isWindrunner(c.charClass),
-    options: ['vengeanceBlood', 'runeArrow'].map((k) =>
+    options: ['swiftShot', 'huntingCombo', 'swiftRecall'].map((k) =>
       feat(k as ClassFeatureKey, defOf(k as ClassFeatureKey)),
     ),
   },
@@ -709,10 +698,10 @@ export const TRAIT_CHOICE_GROUPS: TraitChoiceGroup[] = [
     options: ['galeDancer', 'takeoff'].map((k) => feat(k as ClassFeatureKey, defOf(k as ClassFeatureKey))),
   },
   {
-    id: 'shadowdancer-lv18',
-    title: '影舞者 · LV18 职业特性',
+    id: 'shadowdancer-lv20',
+    title: '影舞者 · LV20 职业特性',
     hint: '请选择 1 项：连续拳、多重打击。',
-    minLevel: 18,
+    minLevel: 20,
     pickCount: 1,
     applies: (c) => isShadowDancer(c.charClass),
     options: ['comboFist', 'multiStrike'].map((k) =>
@@ -720,10 +709,10 @@ export const TRAIT_CHOICE_GROUPS: TraitChoiceGroup[] = [
     ),
   },
   {
-    id: 'shadowdancer-lv21',
-    title: '影舞者 · LV21 职业特性',
+    id: 'shadowdancer-lv25',
+    title: '影舞者 · LV25 职业特性',
     hint: '请选择 1 项：迷幻舞步、灵活身躯。',
-    minLevel: 21,
+    minLevel: 25,
     pickCount: 1,
     applies: (c) => isShadowDancer(c.charClass),
     options: ['illusionDance', 'flexibleBody'].map((k) =>
@@ -731,10 +720,10 @@ export const TRAIT_CHOICE_GROUPS: TraitChoiceGroup[] = [
     ),
   },
   {
-    id: 'shadowdancer-lv25',
-    title: '影舞者 · LV25 职业特性',
+    id: 'shadowdancer-lv30',
+    title: '影舞者 · LV30 职业特性',
     hint: '请选择 1 项：凌波微步、重拳。',
-    minLevel: 25,
+    minLevel: 30,
     pickCount: 1,
     applies: (c) => isShadowDancer(c.charClass),
     options: ['waterWalk', 'heavyFist'].map((k) => feat(k as ClassFeatureKey, defOf(k as ClassFeatureKey))),

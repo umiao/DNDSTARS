@@ -44,20 +44,10 @@ export function syncCalmMindFlags(buffs: CombatBuffs, hasTrait: boolean): Combat
   }
 }
 
-/** 战斗开始时：仅波澜不惊默认进入静心；普通静心在回合开始时判定。 */
+/** 战斗开始时：静心在角色回合开始时判定。 */
 export function initCalmMindForCombat(c: Character): CombatBuffs {
   const buffs = { ...c.combatBuffs }
   if (!hasCalmMindFeature(c)) return buffs
-  if (findClassTrait(c, 'swiftShot')) {
-    return {
-      ...buffs,
-      calmMind: true,
-      calmMindFirstTurnPending: undefined,
-      outOfBreathTurns: undefined,
-      movedFeetThisTurn: undefined,
-      tookDamageThisTurn: undefined,
-    }
-  }
   return {
     ...buffs,
     calmMind: undefined,

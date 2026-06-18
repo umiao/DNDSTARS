@@ -239,8 +239,8 @@ export const ARCHER_SKILL_TREE: ArcherSkillDef[] = [
     id: 'focusShot',
     name: '聚能射击',
     emoji: '⚡',
-    direction: 'windrunner',
-    unlockLevel: 15,
+    direction: 'magic',
+    unlockLevel: 12,
     cooldown: 3,
     apCost: 1,
     tags: ['ranged'],
@@ -248,10 +248,9 @@ export const ARCHER_SKILL_TREE: ArcherSkillDef[] = [
     save: '体质豁免',
     effect: '失败眩晕一回合',
     prerequisite: { skillId: 'clusterShot', minRank: 1 },
-    exclusiveClass: '逐风者',
-    treeSection: 'windrunner',
+    treeSection: 'archer',
     treeColumn: 0,
-    treeRow: 3,
+    treeRow: 2,
     tiers: [
       { damageCount: 2, damageSides: 6, detail: '路径上所有角色受到 2D6 力场伤害。' },
       { damageCount: 3, damageSides: 6, detail: '造成 3D6 点力场伤害。' },
@@ -508,7 +507,7 @@ export const ARCHER_SKILL_TREE: ArcherSkillDef[] = [
     id: 'shadowStepShot',
     name: '影步穿射',
     emoji: '🌑',
-    direction: 'magic',
+    direction: 'shadowdancer',
     unlockLevel: 25,
     cooldown: 4,
     apCost: 1,
@@ -601,6 +600,25 @@ export function skillPointsGrantedOnLevelUp(oldLevel: number, newLevel: number):
   return skillPointsEarned(newLevel) - skillPointsEarned(oldLevel)
 }
 
+const SKILL_RANK_UNLOCK_LEVELS: Record<number, [number, number, number, number, number]> = {
+  1: [1, 5, 10, 15, 20],
+  5: [5, 10, 15, 20, 25],
+  8: [8, 15, 20, 25, 30],
+  12: [12, 20, 25, 30, 35],
+  15: [15, 20, 25, 30, 35],
+  20: [20, 25, 30, 35, 40],
+  25: [25, 30, 35, 40, 45],
+}
+
+export function skillRankCapForCharacterLevel(charLevel: number, skillUnlockLevel: number): number {
+  const unlocks = SKILL_RANK_UNLOCK_LEVELS[skillUnlockLevel] ?? [skillUnlockLevel, skillUnlockLevel + 5, skillUnlockLevel + 10, skillUnlockLevel + 15, skillUnlockLevel + 20]
+  let cap = 0
+  for (let i = 0; i < unlocks.length; i += 1) {
+    if (charLevel >= unlocks[i]) cap = i + 1
+  }
+  return Math.min(MAX_SKILL_RANK, cap)
+}
+
 /** 已消耗的技能点（不含默认技能 1 阶） */
 export function skillPointsSpent(c: Character): number {
   let spent = 0
@@ -680,6 +698,7 @@ export function canUpgradeSkillRank(c: Character, skillId: string): boolean {
   if (!isSkillLearned(c, skillId)) return false
   if (!isSkillClassAllowed(c, def)) return false
   if (getSkillRank(c, skillId) >= MAX_SKILL_RANK) return false
+  if (getSkillRank(c, skillId) >= skillRankCapForCharacterLevel(c.level, def.unlockLevel)) return false
   return getAvailableSkillPoints(c) >= 1
 }
 

@@ -2419,7 +2419,7 @@ export default function MapsPage() {
         featureExtraLabelParts.push(`无声起弦+${sd.level}d6`)
       }
 
-      if (findClassTrait(caster, 'arcaneDevour') && skill.skillTreeId?.includes('magic')) {
+      if (findClassTrait(caster, 'arcaneDevour') && isMagicDamageSkill(skill)) {
         const trait = findClassTrait(caster, 'arcaneDevour')!
         const extra = Array.from({ length: trait.level }, () => 1 + Math.floor(Math.random() * 6)).reduce(
           (a, b) => a + b,
@@ -2620,18 +2620,6 @@ export default function MapsPage() {
         } else if (token.maxHp != null) {
           tokenPatch.hp = Math.max(0, (token.hp ?? token.maxHp) - finalDamage)
           if (tokenPatch.hp <= 0) deferDeathHandling(token.id)
-        }
-        const vengeanceBlood = caster ? findClassTrait(caster, 'vengeanceBlood') : undefined
-        if (caster && vengeanceBlood && finalDamage > 0 && (token.huntingMarkStacks ?? 0) > 0 && vengeanceBlood.uses > 0) {
-          const heal = Math.floor(finalDamage / 2)
-          if (heal > 0 && window.confirm(`复仇之血：消耗 1 次使用，回复 ${heal} 点生命？`)) {
-            const latestCaster = useCharacterStore.getState().characters.find((c) => c.id === caster.id)
-            if (latestCaster) {
-              useClassFeature(caster.id, 'vengeanceBlood')
-              updateChar(caster.id, { currentHp: Math.min(latestCaster.maxHp, latestCaster.currentHp + heal) })
-              featureExtraLabelParts.push(`复仇之血回复${heal}`)
-            }
-          }
         }
       }
       if (burnTurns) tokenPatch.burningTurns = burnTurns
@@ -3226,7 +3214,7 @@ export default function MapsPage() {
         const trait = updated && findClassTrait(updated, 'eagleEye')
         if (trait) {
           alert(
-            `鹰眼已激活：2 回合内敏捷 +${eagleEyeDexBonus(trait.level)}（调整值 +${Math.floor(eagleEyeDexBonus(trait.level) / 2)}）（剩余 ${trait.uses}/${trait.maxUses} 次/长休）`,
+            `鹰眼已激活：3 回合内敏捷 +${eagleEyeDexBonus(trait.level)}（调整值 +${Math.floor(eagleEyeDexBonus(trait.level) / 2)}）（剩余 ${trait.uses}/${trait.maxUses} 次/长休）`,
           )
         }
       }
@@ -3311,6 +3299,25 @@ export default function MapsPage() {
       pushApLog(turnCharacter, 1, '激活影遁之术', `${target.label} 印记 -2，本回合攻击 +1D6`)
       return
     }
+    if (key === 'swiftShot') {
+      const trait = findClassTrait(turnCharacter, 'swiftShot')
+      if (!trait) return
+      const active = (turnCharacter.combatBuffs?.freeMoveFeet ?? 0) > 0
+      const feet = 10 + (trait.level - 1) * 5
+      updateChar(turnCharacter.id, {
+        combatBuffs: {
+          ...turnCharacter.combatBuffs,
+          freeMoveFeet: active ? undefined : feet,
+        },
+      })
+      pushCombatLog(
+        active
+          ? `${turnCharacter.name} 取消迅捷射击免费移动`
+          : `${turnCharacter.name} 激活迅捷射击：可免费移动至多 ${feet} 尺，不消耗 AP`,
+        'turn',
+      )
+      return
+    }
     if (key === 'stillWater') {
       const trait = findClassTrait(turnCharacter, 'stillWater')
       if (!trait) return
@@ -3356,8 +3363,8 @@ export default function MapsPage() {
         pushCombatLog(`${turnCharacter.name} 取消曲终待触发`, 'turn')
         return
       }
-      if (ready && !spendAP(turnCharacter.id, 1)) return
-      pushApLog(turnCharacter, 1, '激活曲终', '等待下一名敌对生物狩猎印记叠至 4 层')
+      if (ready && !spendAP(turnCharacter.id, 2)) return
+      pushApLog(turnCharacter, 2, '激活曲终', '等待下一名敌对生物狩猎印记叠至 4 层')
       useClassFeature(turnCharacter.id, 'finale')
       updateChar(turnCharacter.id, {
         combatBuffs: { ...turnCharacter.combatBuffs, finaleReady: true },
@@ -4275,7 +4282,7 @@ export default function MapsPage() {
           result.saveDC ?? DEFAULT_AOE_SAVE_DC,
           () => {
             if (!spendAP(targetChar.id, 1)) return false
-            pushApLog(targetChar, 1, '残影脱身', '抵消敏捷豁免后仍会受到的伤害')
+            pushApLog(targetChar, 1, '稳定心神', '抵消敏捷豁免后仍会受到的伤害')
             return useClassFeature(targetChar.id, 'stableMind')
           },
           saveD20,

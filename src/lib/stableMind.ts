@@ -34,7 +34,7 @@ export function applyStableMindAfterDexSave(
   }
 
   const ok = window.confirm(
-    `残影脱身\n\n敏捷豁免已成功，仍将受到 ${damageAfterSave} 点伤害。\n是否消耗 1 AP 抵消本次全部伤害？\n（长休剩余 ${trait.uses}/${trait.maxUses} 次）`,
+    `稳定心神\n\n敏捷豁免已成功，仍将受到 ${damageAfterSave} 点伤害。\n是否消耗 1 AP 抵消本次全部伤害？\n（长休剩余 ${trait.uses}/${trait.maxUses} 次）`,
   )
 
   if (!ok) {
@@ -48,7 +48,7 @@ export function applyStableMindAfterDexSave(
   return {
     damage: 0,
     usedStableMind: true,
-    note: '残影脱身：已抵消全部伤害',
+    note: '稳定心神：已抵消全部伤害',
   }
 }
 
