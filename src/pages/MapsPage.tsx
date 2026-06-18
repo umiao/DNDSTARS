@@ -840,7 +840,9 @@ export default function MapsPage() {
 
   const applySharedCombatState = (state: SharedCombatState | null) => {
     if (!state || !activeMap || state.mapId !== activeMap.id) return
-    const validTokenIds = new Set(activeMap.tokens.map((token) => token.id))
+    const latestMap = useMapStore.getState().maps.find((map) => map.id === state.mapId) ?? activeMap
+    if (state.active && (state.initiativeOrder?.length ?? 0) > 0 && latestMap.tokens.length === 0) return
+    const validTokenIds = new Set(latestMap.tokens.map((token) => token.id))
     const initiativeOrder = (state.initiativeOrder ?? []).filter((entry) => validTokenIds.has(entry.tokenId))
     const initiativeIndex = initiativeOrder.length > 0
       ? Math.min(Math.max(0, state.initiativeIndex ?? 0), initiativeOrder.length - 1)
@@ -993,6 +995,7 @@ export default function MapsPage() {
 
   useEffect(() => {
     if (!activeMap) return
+    if (mode === 'dm' && combatActive) return
     let cancelled = false
     const load = async () => {
       const state = await loadSharedResource<SharedCombatState>('combat')
@@ -1004,7 +1007,7 @@ export default function MapsPage() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [activeMap?.id])
+  }, [activeMap?.id, mode, combatActive])
 
   useEffect(() => {
     if (!activeMap || !mode) return

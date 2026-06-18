@@ -15,7 +15,11 @@ export function isTokenDefeated(
 export function isTokenAlive(token: Token, characters: Character[]): boolean {
   if (token.characterId) {
     const ch = characters.find((c) => c.id === token.characterId)
-    return !!ch && ch.currentHp > 0
+    if (ch) return ch.currentHp > 0
+    if (token.maxHp != null) {
+      return (token.hp ?? token.maxHp) > 0
+    }
+    return true
   }
   if (token.maxHp != null) {
     return (token.hp ?? token.maxHp) > 0
