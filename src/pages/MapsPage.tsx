@@ -306,6 +306,8 @@ interface SharedCombatLogState {
 }
 
 function modeFromPort(): Mode | null {
+  const envMode = import.meta.env.VITE_APP_MODE
+  if (envMode === 'dm' || envMode === 'player') return envMode
   if (window.location.port === '5173') return 'dm'
   if (window.location.port === '5174') return 'player'
   return null
@@ -607,6 +609,7 @@ export default function MapsPage() {
     >(),
   )
   const seenSharedLogIdsRef = useRef(new Set<number>())
+  const combatPublishSeqRef = useRef(0)
 
   useEffect(() => {
     if (!sharedDodgePrompt?.expiresAt) return
@@ -807,6 +810,7 @@ export default function MapsPage() {
     patch?: Partial<Omit<SharedCombatState, 'mapId' | 'updatedAt'>>,
   ) => {
     if (!activeMap || mode !== 'dm') return
+    const seq = ++combatPublishSeqRef.current
     const state: SharedCombatState = {
       mapId: activeMap.id,
       active: combatActive,
@@ -817,7 +821,10 @@ export default function MapsPage() {
       updatedAt: Date.now(),
       ...patch,
     }
-    void saveSharedResource('combat', state)
+    void (async () => {
+      if (seq !== combatPublishSeqRef.current) return
+      await saveSharedResource('combat', state)
+    })()
   }
 
   const applySharedCombatState = (state: SharedCombatState | null) => {
@@ -1153,6 +1160,7 @@ export default function MapsPage() {
     if (!activeMap || applyingSharedCombatRef.current) return
     if (mode !== 'dm') return
     if (!combatActive && initiativeOrder.length === 0) return
+    if (combatActive && initiativeOrder.length === 0) return
     publishCombatState()
   }, [activeMap?.id, combatActive, round, initiativeIndex, initiativeOrder, enemyApByToken])
 
@@ -3371,6 +3379,7 @@ export default function MapsPage() {
     const nextAp = { ...ap, current: Math.max(0, ap.current - cost) }
     enemyApByTokenRef.current = { ...enemyApByTokenRef.current, [tokenId]: nextAp }
     setEnemyApByToken((current) => ({ ...current, [tokenId]: nextAp }))
+    publishCombatState({ enemyApByToken: enemyApByTokenRef.current })
     return true
   }
 
@@ -4219,6 +4228,7 @@ export default function MapsPage() {
 
       if (damageType === 'aoe') {
         const estimatedDamage = Math.max(1, result.damage ?? result.attack?.total ?? 0)
+        const saveD20 = await rollDiceBoxD20('敏捷豁免 D20', targetChar.name)
         const resolved = resolveIncomingDexSaveDamage(
           targetChar,
           estimatedDamage,
@@ -4228,6 +4238,7 @@ export default function MapsPage() {
             pushApLog(targetChar, 1, '残影脱身', '抵消敏捷豁免后仍会受到的伤害')
             return useClassFeature(targetChar.id, 'stableMind')
           },
+          saveD20,
         )
         combatLabel = formatDexSaveLabel(resolved)
         d20Roll = {
@@ -4429,10 +4440,6 @@ export default function MapsPage() {
     const latestTarget =
       useCharacterStore.getState().characters.find((c) => c.id === prompt.targetChar.id) ?? prompt.targetChar
     {
-      if (wantsDodge && !canAttemptDodge(latestTarget)) {
-        alert('行动点不足，无法尝试闪避。')
-        return
-      }
       suppressedDodgePromptIdsRef.current.add(prompt.id)
       setSharedDodgePrompt(null)
       if (wantsDodge) {
@@ -4485,6 +4492,26 @@ export default function MapsPage() {
   const scheduleEnemyTurn = async (enemy: Token) => {
     if (!activeMap) return
     const enemyTurnKey = `${round}-${initiativeIndex}-${enemy.id}`
+    const isStillEnemyTurn = () => {
+      if (!combatActive) return false
+      const current = initiativeOrderRef.current[initiativeIndexRef.current]
+      return current?.tokenId === enemy.id
+    }
+    if (!isStillEnemyTurn()) return
+    const chars = useCharacterStore.getState().characters
+    const missingLinkedCharacter = activeMap.tokens.some(
+      (token) =>
+        token.type === 'player' &&
+        !!token.characterId &&
+        !chars.some((character) => character.id === token.characterId),
+    )
+    if (missingLinkedCharacter) {
+      const id = window.setTimeout(() => {
+        if (isStillEnemyTurn()) void scheduleEnemyTurn(enemy)
+      }, 100)
+      enemyTurnTimersRef.current.push(id)
+      return
+    }
     const advanceEnemyIfCurrent = () => {
       const current = initiativeOrderRef.current[initiativeIndexRef.current]
       if (!current || current.tokenId !== enemy.id) return
@@ -4499,8 +4526,10 @@ export default function MapsPage() {
     }
     const result = planEnemyTurn(activeMap, enemy, useCharacterStore.getState().characters, startingAp, { round })
     if (result.newPosition) {
+      if (!isStillEnemyTurn()) return
       const moveApSpent = result.moveApSpent ?? 1
       await resolveOpportunityAttacksForMove(enemy, result.newPosition)
+      if (!isStillEnemyTurn()) return
       const latestMap = useMapStore.getState().maps.find((m) => m.id === activeMap.id)
       const latestEnemy = latestMap?.tokens.find((t) => t.id === enemy.id) ?? enemy
       if (!isTokenAlive(latestEnemy, useCharacterStore.getState().characters)) {
@@ -4524,6 +4553,7 @@ export default function MapsPage() {
     }
 
     const attack = () => {
+      if (!isStillEnemyTurn()) return
       if (!spendEnemyAp(enemy.id, 1)) {
         pushTimer(advanceEnemyIfCurrent, 300)
         return
@@ -4542,15 +4572,18 @@ export default function MapsPage() {
         const latestMap = useMapStore.getState().maps.find((m) => m.id === activeMap.id)
         const latestEnemy = latestMap?.tokens.find((t) => t.id === enemy.id)
         if (apLeft > 0 && latestMap && latestEnemy && isTokenAlive(latestEnemy, useCharacterStore.getState().characters)) {
+          if (!isStillEnemyTurn()) return
           const nextResult = planEnemyTurn(latestMap, latestEnemy, useCharacterStore.getState().characters, apLeft, { round })
           if (nextResult.newPosition) {
             pushTimer(async () => {
+              if (!isStillEnemyTurn()) return
               const moveApSpent = nextResult.moveApSpent ?? 1
               if (!spendEnemyAp(enemy.id, moveApSpent)) {
                 pushTimer(advanceEnemyIfCurrent, 300)
                 return
               }
               await resolveOpportunityAttacksForMove(latestEnemy, nextResult.newPosition!)
+              if (!isStillEnemyTurn()) return
               const stillAliveMap = useMapStore.getState().maps.find((m) => m.id === activeMap.id)
               const stillAliveEnemy = stillAliveMap?.tokens.find((t) => t.id === enemy.id) ?? latestEnemy
               if (!isTokenAlive(stillAliveEnemy, useCharacterStore.getState().characters)) {
@@ -4566,8 +4599,13 @@ export default function MapsPage() {
             }, DICE_ROLL_MS + 5000)
             return
           }
-          if (nextResult.attacked && !nextResult.newPosition && spendEnemyAp(enemy.id, 1)) {
+          if (nextResult.attacked && !nextResult.newPosition) {
             pushTimer(() => {
+              if (!isStillEnemyTurn()) return
+              if (!spendEnemyAp(enemy.id, 1)) {
+                pushTimer(advanceEnemyIfCurrent, 300)
+                return
+              }
               const nextRemainingAp = getEnemyApState(enemy.id).current
               const nextTargetName =
                 latestMap.tokens.find((t) => t.id === nextResult.targetTokenId)?.label ??
@@ -4691,6 +4729,13 @@ export default function MapsPage() {
     setEnemyApByToken(nextEnemyAp)
     pushCombatLog(`进入第 ${next} 回合`, 'turn', next)
     setRound(next)
+    publishCombatState({
+      active: true,
+      round: next,
+      initiativeIndex: 0,
+      initiativeOrder: initiativeOrderRef.current,
+      enemyApByToken: nextEnemyAp,
+    })
   }
 
   const advanceInitiativeCore = () => {
@@ -4739,6 +4784,13 @@ export default function MapsPage() {
     } else {
       setInitiativeIndex(next)
       initiativeIndexRef.current = next
+      publishCombatState({
+        active: true,
+        round,
+        initiativeIndex: next,
+        initiativeOrder: order,
+        enemyApByToken: enemyApByTokenRef.current,
+      })
     }
   }
 
@@ -5407,6 +5459,7 @@ export default function MapsPage() {
                   </button>
                   <button
                     type="button"
+                    data-testid="local-dodge-try"
                     onClick={() => handleDodgeChoice(true)}
                     className="rounded-lg bg-sky-500/25 px-4 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-500/35"
                   >
@@ -5445,6 +5498,8 @@ export default function MapsPage() {
                   </button>
                   <button
                     type="button"
+                    data-testid="shared-dodge-try"
+                    data-dodge-id={sharedDodgePrompt.id}
                     onClick={() => handleSharedDodgeChoice(true)}
                     className="rounded-lg bg-sky-500/25 px-4 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-500/35"
                   >
@@ -5705,6 +5760,7 @@ export default function MapsPage() {
               {/* 玩家：结束自己的回合 */}
               {!isDM && (
                 <button
+                  data-testid="player-end-turn-top"
                   onClick={handlePlayerEndTurn}
                   disabled={!!pendingPlayerAction || !canControlPlayerTurn || !turnCharacter}
                   className={[
@@ -6142,6 +6198,7 @@ export default function MapsPage() {
                 <QiIndicator charClass={activeChar.charClass} level={activeChar.level} qi={activeChar.qi} compact />
                 <button
                   onClick={handlePlayerEndTurn}
+                  data-testid="player-end-turn"
                   disabled={!!pendingPlayerAction}
                   className="ml-auto flex items-center gap-1 rounded-lg bg-arcane-500/20 px-2 py-1 text-xs font-medium text-arcane-100 hover:bg-arcane-500/30"
                   title="结束回合：冷却 -1、行动点回满"

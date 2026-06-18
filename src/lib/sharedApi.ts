@@ -1,6 +1,14 @@
 import { canWriteSharedState } from './appMode'
 
 function sharedApiCandidates(): string[] {
+  const configured = import.meta.env.VITE_SHARED_API_BASES as string | undefined
+  if (configured) {
+    return configured
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .filter((value, index, all) => all.indexOf(value) === index)
+  }
   const sameOrigin = `${window.location.origin}/api`
   return [
     'http://127.0.0.1:5173/api',
@@ -10,6 +18,14 @@ function sharedApiCandidates(): string[] {
 }
 
 function sharedEventApiCandidates(): string[] {
+  const configured = import.meta.env.VITE_SHARED_API_BASES as string | undefined
+  if (configured) {
+    return configured
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .filter((value, index, all) => all.indexOf(value) === index)
+  }
   const sameOrigin = `${window.location.origin}/api`
   return [
     'http://127.0.0.1:5173/api',

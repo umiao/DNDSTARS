@@ -42,6 +42,7 @@ function uid(): string {
 
 let lastSharedCharactersSnapshot = ''
 let lastLocalCharactersWriteAt = 0
+let characterSaveSeq = 0
 
 interface SharedCharactersState {
   characters: Character[]
@@ -648,10 +649,12 @@ export const useCharacterStore = create<CharacterState>()(
   persist(
     (set, get) => {
       const saveCharacters = () => {
+        const seq = ++characterSaveSeq
         const save = async () => {
           let characters = get().characters
           if (isPlayerPort()) {
             const shared = await loadSharedResource<SharedCharactersState>('characters')
+            if (seq !== characterSaveSeq) return
             if (shared?.characters) {
               const sharedById = new Map(shared.characters.map((ch) => [ch.id, ch]))
               characters = characters.map((ch) => {
@@ -667,6 +670,7 @@ export const useCharacterStore = create<CharacterState>()(
             selectedId: get().selectedId,
             updatedAt: Date.now(),
           }
+          if (seq !== characterSaveSeq) return
           lastLocalCharactersWriteAt = payload.updatedAt ?? Date.now()
           lastSharedCharactersSnapshot = JSON.stringify(payload)
           await saveSharedResource('characters', payload)

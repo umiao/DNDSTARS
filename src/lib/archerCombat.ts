@@ -157,8 +157,9 @@ export function resolveDexSaveDamage(
   target: Character,
   fullDamage: number,
   dc = 14,
+  providedD20?: number,
 ): { saveD20: number; saveMod: number; saveTotal: number; dc: number; success: boolean; damage: number } {
-  const saveD20 = rollD20()
+  const saveD20 = providedD20 ?? rollD20()
   const saveMod = getEffectiveAbilityMod(target, 'dex')
   const saveTotal = saveD20 + saveMod
   const success = saveTotal >= dc

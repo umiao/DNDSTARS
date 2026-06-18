@@ -69,8 +69,9 @@ export function resolveIncomingDexSaveDamage(
   fullDamage: number,
   dc: number,
   onStableMindSpend: () => boolean,
+  providedD20?: number,
 ): IncomingDexSaveDamage {
-  const save = resolveDexSaveDamage(character, fullDamage, dc)
+  const save = resolveDexSaveDamage(character, fullDamage, dc, providedD20)
   const stable = applyStableMindAfterDexSave(
     character,
     save.success,

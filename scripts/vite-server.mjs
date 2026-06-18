@@ -1,6 +1,6 @@
 import { createServer } from 'vite'
 import { createReadStream } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -17,11 +17,13 @@ for (let i = 2; i < process.argv.length; i += 1) {
 const host = String(args.get('host') ?? '127.0.0.1')
 const port = Number(args.get('port') ?? 5173)
 const strictPort = args.has('strictPort') || args.get('strict-port') === true
-const sharedRoot = path.resolve(
-  process.env.LOCALAPPDATA ?? process.env.APPDATA ?? os.tmpdir(),
-  'StarsApp',
-  'shared',
-)
+const sharedRoot = process.env.STARS_SHARED_ROOT
+  ? path.resolve(process.env.STARS_SHARED_ROOT)
+  : path.resolve(
+      process.env.LOCALAPPDATA ?? process.env.APPDATA ?? os.tmpdir(),
+      'StarsApp',
+      'shared',
+    )
 const stateRoot = path.join(sharedRoot, 'state')
 const imageRoot = path.join(sharedRoot, 'images')
 const legacySharedRoot = path.resolve(process.cwd(), '.stars-shared')
@@ -132,7 +134,9 @@ async function handleSharedApi(req, res) {
         await mkdir(stateRoot, { recursive: true })
         const body = await readBody(req)
         JSON.parse(body.toString('utf8'))
-        await writeFile(filePath, body)
+        const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
+        await writeFile(tmpPath, body)
+        await rename(tmpPath, filePath)
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
         res.end('{"ok":true}')
         return true
