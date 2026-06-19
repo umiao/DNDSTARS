@@ -318,6 +318,82 @@ test('player precise strike activation is accepted by DM authority', async ({ br
   await context.close()
 })
 
+test('player movement is accepted by DM authority and updates authoritative map state', async ({ browser, request }) => {
+  const mapId = `e2e-player-move-${Date.now()}`
+  await seedEncounter(request, mapId, { playerFirst: true })
+
+  const context = await browser.newContext()
+  const dm = await context.newPage()
+  const player = await context.newPage()
+  await Promise.all([
+    dm.goto(`${DM}/maps`, { waitUntil: 'domcontentloaded' }),
+    player.goto(`${PLAYER}/maps`, { waitUntil: 'domcontentloaded' }),
+  ])
+
+  await expect
+    .poll(
+      async () => {
+        const combat = await getState<{ mapId?: string; active?: boolean; initiativeIndex?: number }>(request, 'combat')
+        return combat.mapId === mapId && combat.active && combat.initiativeIndex === 0
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true)
+
+  const now = Date.now()
+  const targetPosition = center(11, 1)
+  const action = {
+    id: `${mapId}:player-action:${now}:move`,
+    mapId,
+    combatId: `${mapId}:combat`,
+    sourceMode: 'player',
+    status: 'pending',
+    type: 'move-token',
+    actorTokenId: 'player-regression',
+    characterId: 'hero-regression',
+    targetPosition,
+    round: 1,
+    initiativeIndex: 0,
+    seq: 1,
+    updatedAt: now,
+  }
+  await putState(request, 'player-action', action)
+  await postEvent(request, 'player-action-player-to-dm', action)
+
+  await expect
+    .poll(
+      async () => {
+        const ack = await getState<{ actionId?: string; status?: string }>(request, 'player-action-ack')
+        return ack.actionId === action.id ? ack.status : ''
+      },
+      { timeout: 30_000 },
+    )
+    .toBe('accepted')
+
+  await expect
+    .poll(
+      async () => {
+        const characters = await getState<{ characters: Array<{ id: string; currentAP: number }> }>(request, 'characters')
+        return characters.characters.find((item) => item.id === 'hero-regression')?.currentAP
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(1)
+
+  await expect
+    .poll(
+      async () => {
+        const maps = await getState<{ maps: Array<{ id: string; tokens: Array<{ id: string; x: number; y: number }> }> }>(request, 'maps')
+        const token = maps.maps.find((item) => item.id === mapId)?.tokens.find((item) => item.id === 'player-regression')
+        return token ? { x: token.x, y: token.y } : undefined
+      },
+      { timeout: 20_000 },
+    )
+    .toEqual(targetPosition)
+
+  await context.close()
+})
+
 test('precise strike forces crit and armor piercing hits aligned targets', async ({ browser, request }) => {
   const mapId = `e2e-precise-pierce-${Date.now()}`
   await seedEncounter(request, mapId, {

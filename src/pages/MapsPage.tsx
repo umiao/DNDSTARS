@@ -214,11 +214,12 @@ interface SharedPlayerActionState {
   combatId?: string
   sourceMode: 'player'
   status: 'pending' | 'done'
-  type: 'end-turn' | 'attack-token' | 'aoe-attack' | 'qi-reduce-cooldown' | 'activate-feature'
+  type: 'end-turn' | 'attack-token' | 'aoe-attack' | 'move-token' | 'qi-reduce-cooldown' | 'activate-feature'
   actorTokenId: string
   characterId: string
   targetTokenId?: string
   targetCell?: GridCell
+  targetPosition?: { x: number; y: number }
   aoeRectRotation?: number
   skillId?: string
   featureKey?: ClassFeatureKey
@@ -235,6 +236,7 @@ interface SharedPlayerActionAckState {
   actionId: string
   status: 'accepted' | 'rejected'
   reason?: string
+  acceptedPosition?: { x: number; y: number }
   round: number
   initiativeIndex: number
   updatedAt: number
@@ -621,6 +623,13 @@ export default function MapsPage() {
     label: string
   } | null>(null)
   const playerActionRollbackRef = useRef<Record<string, () => void>>({})
+  const pendingMoveOptimisticRef = useRef<{
+    actionId: string
+    mapId: string
+    tokenId: string
+    previous: { x: number; y: number }
+    next: { x: number; y: number }
+  } | null>(null)
   const [showMoveRange, setShowMoveRange] = useState(false)
   const [disengagedCharIds, setDisengagedCharIds] = useState<Set<string>>(() => new Set())
   const enemyAppliedKeysRef = useRef(new Set<string>())
@@ -927,6 +936,7 @@ export default function MapsPage() {
     if (combatChanged || !active) {
       setPendingPlayerAction(null)
       playerActionRollbackRef.current = {}
+      pendingMoveOptimisticRef.current = null
       seenPlayerActionAckIdsRef.current.clear()
       seenPlayerActionIdsRef.current.clear()
       clearPlayerCombatUI()
@@ -1046,12 +1056,32 @@ export default function MapsPage() {
     return nextCharacters
   }
 
+  const applyLocalTokenPatch = (mapId: string, tokenId: string, patch: Partial<Token>) => {
+    useMapStore.setState((state) => ({
+      maps: state.maps.map((map) =>
+        map.id === mapId
+          ? {
+              ...map,
+              tokens: map.tokens.map((token) => (token.id === tokenId ? { ...token, ...patch } : token)),
+            }
+          : map,
+      ),
+    }))
+  }
+
+  const reapplyPendingMoveOptimistic = (mapId: string) => {
+    const pending = pendingMoveOptimisticRef.current
+    if (!pending || pending.mapId !== mapId) return
+    applyLocalTokenPatch(mapId, pending.tokenId, pending.next)
+  }
+
   useEffect(() => {
     if (!activeMap) return
     let cancelled = false
     const load = async () => {
       if (cancelled) return
       await useMapStore.getState().loadShared()
+      if (!cancelled) reapplyPendingMoveOptimistic(activeMap.id)
     }
     void load()
     const timer = window.setInterval(load, 500)
@@ -3765,10 +3795,17 @@ export default function MapsPage() {
     const moveFeet = turnCharacter.speed
     const pos = snapToCellCenter(point.x, point.y, activeMap)
     if (!isWithinMovementRange(center, pos, moveFeet, activeMap)) return
-    if (!spendAP(turnCharacter.id, 1)) return
     const fromCell = pixelToCell(myPlayerToken.x, myPlayerToken.y, activeMap)
     const toCell = pixelToCell(pos.x, pos.y, activeMap)
     const movedFeet = cellDistance(fromCell, toCell) * 5
+    if (!isDM) {
+      if (!sendPlayerMoveRequest(pos, movedFeet)) {
+        alert('行动点不足（需要 1 AP）')
+      }
+      setShowMoveRange(false)
+      return
+    }
+    if (!spendAP(turnCharacter.id, 1)) return
     await resolveOpportunityAttacksForMove(myPlayerToken, pos, turnCharacter)
     const latestMover = useCharacterStore.getState().characters.find((c) => c.id === turnCharacter.id)
     if (!latestMover || latestMover.currentHp <= 0) return
@@ -4175,6 +4212,7 @@ export default function MapsPage() {
     pendingDiceStreamsRef.current.clear()
     pendingSharedDodgeRef.current = null
     pendingSharedStableMindRef.current = null
+    pendingMoveOptimisticRef.current = null
     setDodgePrompt(null)
     setSharedDodgePrompt(null)
     setSharedStableMindPrompt(null)
@@ -5211,6 +5249,7 @@ export default function MapsPage() {
     action: SharedPlayerActionState,
     status: SharedPlayerActionAckState['status'],
     reason?: string,
+    acceptedPosition?: { x: number; y: number },
   ) => {
     if (!activeMap || mode !== 'dm') return
     const ack: SharedPlayerActionAckState = {
@@ -5220,6 +5259,7 @@ export default function MapsPage() {
       actionId: action.id,
       status,
       reason,
+      acceptedPosition,
       round,
       initiativeIndex,
       updatedAt: Date.now(),
@@ -5359,6 +5399,58 @@ export default function MapsPage() {
       })
       completePlayerActionRequest(action)
       acknowledgePlayerAction(action, 'accepted')
+      return
+    }
+
+    if (action.type === 'move-token') {
+      const actor = useCharacterStore.getState().characters.find((c) => c.id === action.characterId)
+      const map = useMapStore.getState().maps.find((item) => item.id === activeMap.id) ?? activeMap
+      const token = map.tokens.find((item) => item.id === action.actorTokenId)
+      if (
+        !actor ||
+        !token ||
+        token.type !== 'player' ||
+        token.characterId !== actor.id ||
+        !action.targetPosition ||
+        !isTokenAlive(token, useCharacterStore.getState().characters)
+      ) {
+        acknowledgePlayerAction(action, 'rejected', 'invalid-move')
+        completePlayerActionRequest(action)
+        return
+      }
+      if (actor.conditions.includes(NO_MOVE_STATUS_LABEL)) {
+        acknowledgePlayerAction(action, 'rejected', 'no-move')
+        completePlayerActionRequest(action)
+        return
+      }
+      const targetPosition = snapToCellCenter(action.targetPosition.x, action.targetPosition.y, map)
+      const center = { x: token.x, y: token.y }
+      if (!isWithinMovementRange(center, targetPosition, actor.speed, map)) {
+        acknowledgePlayerAction(action, 'rejected', 'out-of-range')
+        completePlayerActionRequest(action)
+        return
+      }
+      if (!spendAP(actor.id, 1)) {
+        acknowledgePlayerAction(action, 'rejected', 'insufficient-ap')
+        completePlayerActionRequest(action)
+        return
+      }
+      const fromCell = pixelToCell(token.x, token.y, map)
+      const toCell = pixelToCell(targetPosition.x, targetPosition.y, map)
+      const movedFeet = cellDistance(fromCell, toCell) * 5
+      await resolveOpportunityAttacksForMove(token, targetPosition, actor)
+      const latestMover = useCharacterStore.getState().characters.find((c) => c.id === actor.id)
+      if (!latestMover || latestMover.currentHp <= 0) {
+        pushApLog(actor, 1, '移动', `${movedFeet} 尺，移动被打断`)
+        completePlayerActionRequest(action)
+        acknowledgePlayerAction(action, 'accepted', 'mover-defeated', { x: token.x, y: token.y })
+        return
+      }
+      updateToken(map.id, token.id, targetPosition)
+      pushApLog(actor, 1, '移动', `${movedFeet} 尺`)
+      notifyCombatMove(actor.id)
+      completePlayerActionRequest(action)
+      acknowledgePlayerAction(action, 'accepted', undefined, targetPosition)
       return
     }
 
@@ -5511,6 +5603,57 @@ export default function MapsPage() {
     return true
   }
 
+  const sendPlayerMoveRequest = (targetPosition: { x: number; y: number }, movedFeet: number) => {
+    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken || !myPlayerToken) return false
+    if (turnCharacter.currentAP < 1) return false
+    const seq = playerActionSeqRef.current + 1
+    playerActionSeqRef.current = seq
+    const action: SharedPlayerActionState = {
+      id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
+      mapId: activeMap.id,
+      combatId: combatIdRef.current,
+      sourceMode: 'player',
+      status: 'pending',
+      type: 'move-token',
+      actorTokenId: currentInitiativeToken.id,
+      characterId: turnCharacter.id,
+      targetPosition,
+      round,
+      initiativeIndex,
+      seq,
+      updatedAt: Date.now(),
+    }
+    const previousPosition = { x: myPlayerToken.x, y: myPlayerToken.y }
+    const previousCharacter = useCharacterStore.getState().characters.find((c) => c.id === turnCharacter.id)
+    pendingMoveOptimisticRef.current = {
+      actionId: action.id,
+      mapId: activeMap.id,
+      tokenId: myPlayerToken.id,
+      previous: previousPosition,
+      next: targetPosition,
+    }
+    applyLocalTokenPatch(activeMap.id, myPlayerToken.id, targetPosition)
+    updateChar(turnCharacter.id, { currentAP: Math.max(0, turnCharacter.currentAP - 1) })
+    notifyCombatMove(turnCharacter.id)
+    playerActionRollbackRef.current[action.id] = () => {
+      applyLocalTokenPatch(activeMap.id, myPlayerToken.id, previousPosition)
+      if (previousCharacter) {
+        useCharacterStore.setState((state) => ({
+          characters: state.characters.map((character) =>
+            character.id === previousCharacter.id ? previousCharacter : character,
+          ),
+        }))
+      }
+      if (pendingMoveOptimisticRef.current?.actionId === action.id) {
+        pendingMoveOptimisticRef.current = null
+      }
+    }
+    setPendingPlayerAction({ id: action.id, label: `${turnCharacter.name} 移动 ${movedFeet} 尺` })
+    void saveSharedResource<SharedPlayerActionState>('player-action', action)
+    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
+    return true
+  }
+
   const sendPlayerQiReduceCooldownRequest = (skill: CombatSkill) => {
     if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
     if (skill.remaining <= 0 || (turnCharacter.qi ?? 0) < 1) return false
@@ -5585,6 +5728,17 @@ export default function MapsPage() {
         if (!current || current.id !== ack.actionId) return current
         if (ack.status === 'rejected') {
           playerActionRollbackRef.current[ack.actionId]?.()
+        } else if (pendingMoveOptimisticRef.current?.actionId === ack.actionId) {
+          const pendingMove = pendingMoveOptimisticRef.current
+          if (ack.acceptedPosition) {
+            pendingMove.next = ack.acceptedPosition
+            applyLocalTokenPatch(pendingMove.mapId, pendingMove.tokenId, ack.acceptedPosition)
+          }
+          window.setTimeout(() => {
+            if (pendingMoveOptimisticRef.current?.actionId === ack.actionId) {
+              pendingMoveOptimisticRef.current = null
+            }
+          }, 1200)
         }
         delete playerActionRollbackRef.current[ack.actionId]
         window.setTimeout(() => {
