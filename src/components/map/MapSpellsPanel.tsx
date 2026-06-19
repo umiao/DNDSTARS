@@ -12,10 +12,11 @@ interface MapSpellsPanelProps {
   charId: string
   onUseSkill?: (skill: CombatSkill) => void
   onQiReduceSkill?: (skill: CombatSkill) => void
+  canAct?: boolean
 }
 
 /** 地图战斗 · 法术栏（施法职业显示法术型技能） */
-export default function MapSpellsPanel({ charId, onUseSkill, onQiReduceSkill }: MapSpellsPanelProps) {
+export default function MapSpellsPanel({ charId, onUseSkill, onQiReduceSkill, canAct = true }: MapSpellsPanelProps) {
   const c = useCharacterStore((s) => s.characters.find((x) => x.id === charId))
 
   if (!c) return null
@@ -43,6 +44,7 @@ export default function MapSpellsPanel({ charId, onUseSkill, onQiReduceSkill }: 
       fillHeight
       onUseSkill={onUseSkill}
       onQiReduceSkill={onQiReduceSkill}
+      canAct={canAct}
     />
   )
 }

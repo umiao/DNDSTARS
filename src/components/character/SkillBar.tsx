@@ -100,6 +100,7 @@ export default function SkillBar({
         {!hideTurnControls && (
           <>
             <button
+              type="button"
               onClick={() => endTurn(charId)}
               className="ml-auto flex items-center gap-2 rounded-xl bg-arcane-500/20 px-4 py-2 text-sm font-semibold text-arcane-100 transition-colors hover:bg-arcane-500/30"
               title="所有技能冷却 -1"
@@ -108,6 +109,7 @@ export default function SkillBar({
               结束回合（冷却 -1）
             </button>
             <button
+              type="button"
               onClick={() => addSkill(charId)}
               className="flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-white/10"
             >
@@ -118,6 +120,7 @@ export default function SkillBar({
         )}
         {hideTurnControls && (
           <button
+            type="button"
             onClick={() => addSkill(charId)}
             className="ml-auto flex items-center gap-1.5 rounded-lg bg-white/5 px-3 py-1.5 text-sm font-medium text-slate-300 transition-colors hover:bg-white/10"
           >
@@ -139,7 +142,7 @@ export default function SkillBar({
         <div
           className={
             scrollColumns
-              ? 'flex gap-2 overflow-x-auto pb-2'
+              ? 'flex gap-2 overflow-x-auto overscroll-contain pb-2'
               : `grid grid-cols-4 gap-2 sm:grid-cols-9 ${fillHeight ? 'h-full' : ''}`
           }
         >
@@ -155,7 +158,7 @@ export default function SkillBar({
             </div>
             <div
               className={`space-y-1.5 ${
-                fillHeight ? 'min-h-0 flex-1 overflow-y-auto' : scrollColumns ? 'max-h-44 overflow-y-auto' : 'max-h-72 overflow-y-auto'
+                fillHeight ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : scrollColumns ? 'max-h-44 overflow-y-auto overscroll-contain' : 'max-h-72 overflow-y-auto overscroll-contain'
               }`}
             >
               {infiniteSkills.map((s) => (
@@ -193,7 +196,7 @@ export default function SkillBar({
                 </div>
                 <div
                   className={`space-y-1.5 ${
-                    fillHeight ? 'min-h-0 flex-1 overflow-y-auto' : scrollColumns ? 'max-h-44 overflow-y-auto' : 'max-h-72 overflow-y-auto'
+                    fillHeight ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : scrollColumns ? 'max-h-44 overflow-y-auto overscroll-contain' : 'max-h-72 overflow-y-auto overscroll-contain'
                   }`}
                 >
                   {inCol.map((s) =>
@@ -235,6 +238,7 @@ export default function SkillBar({
           <div className="mb-3 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">编辑技能</p>
             <button
+              type="button"
               onClick={() => setEditingId(null)}
               className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-white/5"
             >
@@ -257,6 +261,7 @@ export default function SkillBar({
                 <div className="mt-1 flex flex-wrap gap-1">
                   {EMOJI_CHOICES.map((emoji) => (
                     <button
+                      type="button"
                       key={emoji}
                       onClick={() => updateSkill(charId, editing.id, { emoji })}
                       className={[
@@ -324,6 +329,7 @@ export default function SkillBar({
                   <span className="font-semibold text-arcane-300">{effectiveCd(editing)}</span> 回合
                 </span>
                 <button
+                  type="button"
                   onClick={() => {
                     removeSkill(charId, editing.id)
                     setEditingId(null)
@@ -370,7 +376,7 @@ function ReadySkill({
         onDelete()
       }}
     >
-      <button onClick={onEdit} className="flex w-full items-center gap-1.5 text-left">
+      <button type="button" onClick={onEdit} className="flex w-full items-center gap-1.5 text-left">
         <span className="text-lg">{skill.emoji}</span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs font-semibold text-slate-100">{skill.name}</span>
@@ -393,6 +399,7 @@ function ReadySkill({
         </span>
       </button>
       <button
+        type="button"
         onClick={onUse}
         disabled={!canUse}
         className={[
@@ -436,12 +443,13 @@ function CoolingSkill({
         onDelete()
       }}
     >
-      <button onClick={onEdit} className="block w-full">
+      <button type="button" onClick={onEdit} className="block w-full">
         <span className="block text-lg">{skill.emoji}</span>
         <span className="block truncate text-[11px] text-slate-300">{skill.name}</span>
       </button>
       <div className="mt-1 flex gap-1">
         <button
+          type="button"
           onClick={onReduce}
           disabled={!canReduce}
           title="用激励骰使冷却 -1"
@@ -455,6 +463,7 @@ function CoolingSkill({
         </button>
         {onQiReduce && (
           <button
+            type="button"
             onClick={onQiReduce}
             disabled={!canQiReduce}
             title="消耗 1 点气使冷却 -1（每技能每回合最多 1 次）"

@@ -6946,6 +6946,7 @@ export default function MapsPage() {
                     charId={activeChar.id}
                     onUseSkill={handleUseSkill}
                     onQiReduceSkill={sendPlayerQiReduceCooldownRequest}
+                    canAct={canControlPlayerTurn && activeChar.id === turnCharacter?.id}
                   />
                 )}
                 {charPanel === 'skills' &&
@@ -6981,6 +6982,7 @@ export default function MapsPage() {
                       }
                       onUseSkill={handleUseSkill}
                       onQiReduceSkill={sendPlayerQiReduceCooldownRequest}
+                      canAct={canControlPlayerTurn && activeChar.id === turnCharacter?.id}
                     />
                   ))}
               </div>
