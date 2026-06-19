@@ -61,6 +61,11 @@ async function postEvent(request: APIRequestContext, channel: string, payload: u
   expect(res.ok()).toBeTruthy()
 }
 
+async function clearEvents(request: APIRequestContext) {
+  const res = await request.delete(`${DM}/api/events/_all`)
+  expect(res.ok()).toBeTruthy()
+}
+
 async function getState<T>(request: APIRequestContext, name: string): Promise<T> {
   const res = await request.get(`${DM}/api/state/${name}`)
   expect(res.ok()).toBeTruthy()
@@ -81,6 +86,8 @@ async function seedEncounter(
   } = {},
 ) {
   const now = Date.now()
+  const combatId = `${mapId}:combat`
+  await clearEvents(request)
   await putState(request, 'characters', {
     characters: [
       heroCharacter(
@@ -173,10 +180,11 @@ async function seedEncounter(
   })
   await putState(request, 'combat-log', { mapId, entries: [], updatedAt: now })
   await putState(request, 'dodge', { id: `${mapId}:none`, mapId, status: 'done', updatedAt: now })
-  await putState(request, 'player-action', { id: `${mapId}:none`, mapId, status: 'done', updatedAt: now })
-  await putState(request, 'player-action-ack', { id: `${mapId}:none`, mapId, actionId: 'none', status: 'accepted', round: 1, initiativeIndex: 0, updatedAt: now })
+  await putState(request, 'player-action', { id: `${mapId}:none`, mapId, combatId, status: 'done', updatedAt: now })
+  await putState(request, 'player-action-ack', { id: `${mapId}:none`, mapId, combatId, actionId: 'none', status: 'accepted', round: 1, initiativeIndex: 0, updatedAt: now })
   await putState(request, 'combat', {
     mapId,
+    combatId,
     active: true,
     round: 1,
     initiativeIndex: 0,
@@ -269,6 +277,7 @@ test('player precise strike activation is accepted by DM authority', async ({ br
   const action = {
     id: `${mapId}:player-action:${now}:1`,
     mapId,
+    combatId: `${mapId}:combat`,
     sourceMode: 'player',
     status: 'pending',
     type: 'activate-feature',
@@ -385,6 +394,7 @@ test('precise strike forces crit and armor piercing hits aligned targets', async
   const action = {
     id: `${mapId}:player-action:${now}:attack`,
     mapId,
+    combatId: `${mapId}:combat`,
     sourceMode: 'player',
     status: 'pending',
     type: 'attack-token',

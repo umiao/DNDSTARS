@@ -167,6 +167,7 @@ type Mode = 'dm' | 'player'
 
 interface SharedCombatState {
   mapId: string
+  combatId?: string
   active: boolean
   round: number
   initiativeIndex: number
@@ -210,6 +211,7 @@ interface SharedStableMindState {
 interface SharedPlayerActionState {
   id: string
   mapId: string
+  combatId?: string
   sourceMode: 'player'
   status: 'pending' | 'done'
   type: 'end-turn' | 'attack-token' | 'aoe-attack' | 'qi-reduce-cooldown' | 'activate-feature'
@@ -229,6 +231,7 @@ interface SharedPlayerActionState {
 interface SharedPlayerActionAckState {
   id: string
   mapId: string
+  combatId?: string
   actionId: string
   status: 'accepted' | 'rejected'
   reason?: string
@@ -663,6 +666,7 @@ export default function MapsPage() {
   )
   const seenSharedLogIdsRef = useRef(new Set<number>())
   const combatPublishSeqRef = useRef(0)
+  const combatIdRef = useRef('')
 
   useEffect(() => {
     if (!sharedDodgePrompt?.expiresAt && !sharedStableMindPrompt?.expiresAt) return
@@ -885,6 +889,7 @@ export default function MapsPage() {
     const seq = ++combatPublishSeqRef.current
     const state: SharedCombatState = {
       mapId: activeMap.id,
+      combatId: combatIdRef.current,
       active: combatActive,
       round,
       initiativeIndex,
@@ -915,7 +920,17 @@ export default function MapsPage() {
     const snapshot = JSON.stringify({ state, tokenIds: Array.from(validTokenIds).sort() })
     if (snapshot === lastSharedCombatSnapshot) return
     lastSharedCombatSnapshot = snapshot
+    const incomingCombatId = state.combatId ?? ''
+    const combatChanged = incomingCombatId !== combatIdRef.current
     applyingSharedCombatRef.current = true
+    combatIdRef.current = incomingCombatId
+    if (combatChanged || !active) {
+      setPendingPlayerAction(null)
+      playerActionRollbackRef.current = {}
+      seenPlayerActionAckIdsRef.current.clear()
+      seenPlayerActionIdsRef.current.clear()
+      clearPlayerCombatUI()
+    }
     setCombatActive(active)
     combatActiveRef.current = active
     setRound(state.round)
@@ -4148,7 +4163,10 @@ export default function MapsPage() {
     enemyTurnTimersRef.current = []
   }
 
-  const clearCombatMessageQueues = async (mapId: string) => {
+  const clearCombatMessageQueues = async (
+    mapId: string,
+    options: { clearCombatLog?: boolean; combatId?: string } = {},
+  ) => {
     seenSharedDiceIdsRef.current.clear()
     seenDiceStreamEventIdsRef.current.clear()
     seenRollRequestIdsRef.current.clear()
@@ -4169,8 +4187,9 @@ export default function MapsPage() {
     afterRollRef.current = null
 
     const updatedAt = Date.now()
+    const queueCombatId = options.combatId ?? combatIdRef.current
     await clearSharedEventBacklog()
-    await Promise.all([
+    const writes: Promise<void>[] = [
       clearSharedResource('dice'),
       saveSharedResource<SharedDiceEventsState>('dice-events', { mapId, events: [], updatedAt }),
       saveSharedResource<SharedDodgeState>('dodge', {
@@ -4198,6 +4217,7 @@ export default function MapsPage() {
       saveSharedResource<SharedPlayerActionState>('player-action', {
         id: `${mapId}:combat-start:player-action:${updatedAt}`,
         mapId,
+        combatId: queueCombatId,
         sourceMode: 'player',
         status: 'done',
         type: 'end-turn',
@@ -4211,22 +4231,28 @@ export default function MapsPage() {
       saveSharedResource<SharedPlayerActionAckState>('player-action-ack', {
         id: `${mapId}:combat-start:player-action-ack:${updatedAt}`,
         mapId,
+        combatId: queueCombatId,
         actionId: '',
         status: 'accepted',
         round: 1,
         initiativeIndex: 0,
         updatedAt,
       }),
-      saveSharedResource<SharedCombatLogState>('combat-log', { mapId, entries: [], updatedAt }),
-    ])
+    ]
+    if (options.clearCombatLog) {
+      writes.push(saveSharedResource<SharedCombatLogState>('combat-log', { mapId, entries: [], updatedAt }))
+    }
+    await Promise.all(writes)
   }
 
   const startCombat = async () => {
     if (!activeMap) return
+    const nextCombatId = `${activeMap.id}:combat:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    combatIdRef.current = nextCombatId
     clearEnemyTurnTimers()
     setCombatLog([])
     setCombatLogOpen(true)
-    await clearCombatMessageQueues(activeMap.id)
+    await clearCombatMessageQueues(activeMap.id, { clearCombatLog: true, combatId: nextCombatId })
     enemyAppliedKeysRef.current.clear()
     playerTurnStartedRef.current.clear()
     multiStrikeHitsRef.current = {}
@@ -4265,6 +4291,7 @@ export default function MapsPage() {
     initiativeIndexRef.current = 0
     setInitiativeScroll(0)
     publishCombatState({
+      combatId: nextCombatId,
       active: true,
       round: 1,
       initiativeIndex: 0,
@@ -4276,6 +4303,9 @@ export default function MapsPage() {
 
   const endCombat = () => {
     pushCombatLog('战斗结束', 'system')
+    if (activeMap) {
+      void clearCombatMessageQueues(activeMap.id, { clearCombatLog: false })
+    }
     clearEnemyTurnTimers()
     setDodgePrompt(null)
     afterRollRef.current = null
@@ -4295,6 +4325,7 @@ export default function MapsPage() {
     enemyApByTokenRef.current = {}
     setEnemyApByToken({})
     publishCombatState({
+      combatId: combatIdRef.current,
       active: false,
       round,
       initiativeIndex: 0,
@@ -5185,6 +5216,7 @@ export default function MapsPage() {
     const ack: SharedPlayerActionAckState = {
       id: `${action.id}:ack:${Date.now()}`,
       mapId: activeMap.id,
+      combatId: combatIdRef.current,
       actionId: action.id,
       status,
       reason,
@@ -5206,6 +5238,11 @@ export default function MapsPage() {
 
   const handlePlayerActionRequest = async (action: SharedPlayerActionState) => {
     if (!isDM || !activeMap || action.mapId !== activeMap.id || action.status !== 'pending') return
+    if (!action.combatId || action.combatId !== combatIdRef.current) {
+      acknowledgePlayerAction(action, 'rejected', 'stale-combat')
+      completePlayerActionRequest(action)
+      return
+    }
     const liveRound = roundRef.current
     const liveIndex = initiativeIndexRef.current
     const current = initiativeOrderRef.current[liveIndex]
@@ -5377,6 +5414,7 @@ export default function MapsPage() {
     const action: SharedPlayerActionState = {
       id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
       mapId: activeMap.id,
+      combatId: combatIdRef.current,
       sourceMode: 'player',
       status: 'pending',
       type: 'end-turn',
@@ -5400,6 +5438,7 @@ export default function MapsPage() {
     const action: SharedPlayerActionState = {
       id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
       mapId: activeMap.id,
+      combatId: combatIdRef.current,
       sourceMode: 'player',
       status: 'pending',
       type: 'activate-feature',
@@ -5426,6 +5465,7 @@ export default function MapsPage() {
     const action: SharedPlayerActionState = {
       id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
       mapId: activeMap.id,
+      combatId: combatIdRef.current,
       sourceMode: 'player',
       status: 'pending',
       type: 'attack-token',
@@ -5451,6 +5491,7 @@ export default function MapsPage() {
     const action: SharedPlayerActionState = {
       id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
       mapId: activeMap.id,
+      combatId: combatIdRef.current,
       sourceMode: 'player',
       status: 'pending',
       type: 'aoe-attack',
@@ -5478,6 +5519,7 @@ export default function MapsPage() {
     const action: SharedPlayerActionState = {
       id: `${activeMap.id}:player-action:${Date.now()}:${seq}`,
       mapId: activeMap.id,
+      combatId: combatIdRef.current,
       sourceMode: 'player',
       status: 'pending',
       type: 'qi-reduce-cooldown',

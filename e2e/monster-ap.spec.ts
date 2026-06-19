@@ -69,6 +69,11 @@ async function putState(request: APIRequestContext, name: string, payload: unkno
   expect(res.ok()).toBeTruthy()
 }
 
+async function clearEvents(request: APIRequestContext) {
+  const res = await request.delete(`${DM}/api/events/_all`)
+  expect(res.ok()).toBeTruthy()
+}
+
 async function getState<T>(request: APIRequestContext, name: string): Promise<T> {
   const res = await request.get(`${DM}/api/state/${name}`)
   expect(res.ok()).toBeTruthy()
@@ -79,6 +84,8 @@ async function seedEnemyFirstCombat(request: APIRequestContext, mapId: string) {
   const playerPos = center(3, 3)
   const enemyPos = center(4, 3)
   const now = Date.now()
+  const combatId = `${mapId}:combat`
+  await clearEvents(request)
 
   await putState(request, 'characters', {
     characters: [heroCharacter()],
@@ -137,6 +144,7 @@ async function seedEnemyFirstCombat(request: APIRequestContext, mapId: string) {
   await putState(request, 'dodge', { id: `${mapId}:none`, mapId, status: 'done', updatedAt: now })
   await putState(request, 'combat', {
     mapId,
+    combatId,
     active: true,
     round: 1,
     initiativeIndex: 0,
