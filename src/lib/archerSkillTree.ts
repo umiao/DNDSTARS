@@ -708,6 +708,261 @@ export function formatSkillDamage(tier: SkillTierStats): string {
   return `${tier.damageCount}D${tier.damageSides}${bonus}`
 }
 
+type SkillDisplayMeta = {
+  range?: string
+  target?: string | ((rank: number) => string)
+  damageType?: string
+  damage?: (rank: number, tier: SkillTierStats) => string | undefined
+  save?: string | ((rank: number) => string | undefined)
+  effect?: string | ((rank: number) => string | undefined)
+}
+
+const SKILL_DISPLAY_META: Record<string, SkillDisplayMeta> = {
+  basicShot: {
+    range: '90 尺',
+    target: '单体',
+    damageType: '穿刺',
+    effect: '无冷却，随时可用。',
+  },
+  multiShot: {
+    range: '30 尺',
+    target: (rank) => (rank >= 4 ? '至多三名敌人' : '至多两名敌人'),
+    damageType: '无属性',
+    damage: (rank, tier) => `每支箭 ${formatSkillDamage(tier)} 点无属性伤害`,
+    effect: (rank) => (rank >= 4 ? '射出三支箭矢，可分别选择目标。' : '射出两支箭矢，可分别选择目标。'),
+  },
+  whirlwindKick: {
+    range: '周围 5 尺',
+    target: '范围内敌对生物',
+    damageType: '钝击',
+    save: '敏捷豁免',
+    effect: '成功伤害减半；失败受到全额伤害并被击飞。',
+  },
+  clusterShot: {
+    range: '20 尺',
+    target: '单体',
+    damageType: '穿刺',
+    effect: '10 尺内全额伤害；10-20 尺伤害减半。',
+  },
+  burstKick: {
+    range: '5 尺',
+    target: '单体',
+    damageType: '钝击',
+    save: (rank) => (rank >= 3 ? '体质豁免' : undefined),
+    effect: (rank) => (rank >= 3 ? '失败眩晕 1 回合。' : undefined),
+  },
+  rageShot: {
+    range: '60 尺',
+    target: (rank) => (rank >= 4 ? '至多两名敌人' : '单体'),
+    damageType: '穿刺',
+    save: (rank) => (rank >= 3 ? '力量豁免' : undefined),
+    effect: (rank) => {
+      if (rank >= 4) return '可额外选择一名目标；中型或更小目标豁免失败则被束缚。'
+      if (rank >= 3) return '中型或更小目标豁免失败则被束缚。'
+      return undefined
+    },
+  },
+  riseKick: {
+    range: '5 尺',
+    target: '单体',
+    damageType: '钝击',
+    effect: (rank) =>
+      rank >= 4
+        ? '仅倒地时可用；造成伤害后免费解除倒地，并可免费移动 10 尺。'
+        : '仅倒地时可用；造成伤害后免费解除倒地。',
+  },
+  explosiveArrow: {
+    range: '60 尺',
+    target: '单体',
+    damageType: '魔法',
+    effect: (rank) =>
+      rank >= 4
+        ? '重击时额外造成火焰伤害并叠加 2 层燃烧。'
+        : '重击时额外造成火焰伤害并叠加 1 层燃烧。',
+  },
+  focusShot: {
+    range: '5×30 尺直线路径',
+    target: '路径覆盖的敌对生物',
+    damageType: '力场',
+    save: '敏捷豁免',
+    effect: '失败伤害减半。',
+  },
+  aerialCombo: {
+    range: '20 尺内一点，10 尺半径',
+    target: '圆形范围内敌对生物',
+    damageType: '穿刺',
+    save: '敏捷豁免',
+    effect: '失败受到全额伤害；成功伤害减半。',
+  },
+  arrowStorm: {
+    range: '90 尺，10×15 尺矩形',
+    target: '矩形范围内敌对生物',
+    damageType: '穿刺',
+    save: '敏捷豁免',
+    effect: '失败受到全额伤害；成功伤害减半。可按 Q/E 旋转矩形方向。',
+  },
+  windKickCombo: {
+    range: '移动 15 尺，终点 5 尺内',
+    target: '单体',
+    damageType: '钝击',
+    damage: (rank) => {
+      const dice = rank >= 5 ? '6D4' : rank >= 3 ? '5D4' : rank >= 2 ? '4D4' : '3D4'
+      return `${dice} 点钝击伤害`
+    },
+    effect: (rank) => {
+      const parts = ['目标处于击飞状态时额外造成 1D6 点钝击伤害。']
+      if (rank >= 3) parts.push('命中后可额外推动目标 5 尺。')
+      if (rank >= 4) parts.push('推动撞上障碍物时额外造成 1D6 点钝击伤害。')
+      if (rank >= 5) parts.push('攻击击飞状态的目标时，本技能 CD -1。')
+      return parts.join('')
+    },
+  },
+  bindShot: {
+    range: '20 尺',
+    target: '单体',
+    damageType: '穿刺',
+    damage: (rank, tier) => {
+      if (rank >= 5) return '5D6+2D6 点穿刺伤害'
+      if (rank >= 4) return '4D6+1D6 点穿刺伤害'
+      if (rank >= 3) return '3D6+1D6 点穿刺伤害'
+      return `${formatSkillDamage(tier)} 点穿刺伤害`
+    },
+    save: '力量豁免',
+    effect: (rank) =>
+      rank >= 4
+        ? '小型/中型目标失败则被拉近并缠绕；本回合爆裂踢伤害 +1D6。'
+        : '小型/中型目标失败则被拉近至多 10 尺；本回合爆裂踢伤害 +1D6。',
+  },
+  refluxMagicArrow: {
+    range: '60 尺',
+    target: '单体',
+    damageType: '无属性魔法',
+    effect: (rank) =>
+      rank >= 3
+        ? '命中后选择一项冷却中技能 CD -1；重击时额外再 CD -1。'
+        : '命中后选择一项冷却中技能 CD -1。',
+  },
+  encircle: {
+    range: '原地',
+    target: '箭矢指定目标',
+    damageType: '穿刺',
+    damage: (rank, tier) => `每支箭 ${formatSkillDamage(tier)} 点穿刺伤害`,
+    save: (rank) => (rank >= 5 ? '体质豁免' : undefined),
+    effect: (rank) => {
+      if (rank >= 5) return '射出 5 支箭；全部射向同一目标时，目标豁免失败则眩晕 1 回合。'
+      if (rank >= 4) return '射出 4 支箭；若自身处于气喘状态，使用后获得静心状态。'
+      if (rank >= 3) return '射出 4 支箭；至少 3 支命中同一目标时，该目标速度 -10 尺，持续 1 回合。'
+      return '射出 3 支箭；命中目标一回合内无法移动。'
+    },
+  },
+  spiralBlade: {
+    range: '5 尺半径圆形',
+    target: '范围内敌对生物',
+    damageType: '斩击',
+    save: '敏捷豁免',
+    effect: '失败受到伤害；成功无伤害。',
+  },
+  shadowDance: {
+    range: '移动 15 尺，从敌人下方穿过',
+    target: '单体',
+    damageType: '钝击',
+    effect: (rank) =>
+      rank >= 3
+        ? '移动不触发借机攻击；本回合该目标对踏风连踢视为处于击飞状态。'
+        : '移动不触发借机攻击。',
+  },
+  windTraceShot: {
+    range: '5×60 尺直线',
+    target: '路径覆盖的敌对生物',
+    damageType: '穿刺',
+    effect: (rank) => {
+      if (rank >= 5) return '若只命中一名带狩猎印记的敌人，本次攻击具有优势；若命中则造成重击。'
+      if (rank >= 4) return '静心状态下使用后，本技能 CD -1。'
+      if (rank >= 3) return '目标带有狩猎印记时，每层印记额外 +1D6。'
+      if (rank >= 2) return '静心状态下额外 +1D6。'
+      return '路径上仅有一名敌人时额外 +2D6。'
+    },
+  },
+  antiMagicArrow: {
+    range: '90 尺',
+    target: '单体',
+    damageType: '无属性魔法',
+    effect: (rank) => {
+      if (rank >= 5) return '目标有魔法增益或状态时额外 +2D6；每移除一个魔法增益，本技能 CD -1。'
+      if (rank >= 4) return '目标有魔法增益或状态时额外 +2D6；取消目标所有增益效果。'
+      if (rank >= 3) return '目标有魔法增益或状态时额外 +2D6；给予脆弱状态。'
+      return '目标有魔法增益或状态时额外 +2D6。'
+    },
+  },
+  shadowStepShot: {
+    range: '移动 10 尺 + 60 尺射击',
+    target: '单体',
+    damageType: '穿刺',
+    effect: (rank) =>
+      rank >= 5
+        ? '移动不触发借机攻击；移动后与目标距离不小于 30 尺时，本次攻击具有优势。'
+        : rank >= 4
+          ? '移动距离提升至 15 尺；移动不触发借机攻击。'
+          : '移动不触发借机攻击。',
+  },
+  eagleStrike: {
+    range: '5 尺',
+    target: '单体',
+    damageType: '钝击',
+    damage: (rank) => {
+      if (rank >= 3) return '3D6+4D6 点钝击伤害'
+      if (rank >= 2) return '3D4+4D6 点钝击伤害'
+      return '3D4+3D6 点钝击伤害'
+    },
+    save: (rank) => (rank >= 5 ? '敏捷豁免（击飞，劣势）' : '敏捷豁免（击飞）'),
+    effect: (rank) => {
+      if (rank >= 5) return '连续 3 段腿法攻击；攻击击飞状态的敌人时，本技能 CD -3，且目标击飞豁免劣势。'
+      if (rank >= 4) return '连续 3 段腿法攻击；攻击击飞状态的敌人时，本技能 CD -3。'
+      return '连续 3 段腿法攻击；若目标已处于击飞状态，本技能 CD -2。'
+    },
+  },
+}
+
+function resolveDisplayValue(value: string | ((rank: number) => string | undefined) | undefined, rank: number) {
+  return typeof value === 'function' ? value(rank) : value
+}
+
+function displayTarget(def: ArcherSkillDef, rank: number): string {
+  const metaTarget = resolveDisplayValue(SKILL_DISPLAY_META[def.id]?.target, rank)
+  if (metaTarget) return metaTarget
+  if (def.tags?.includes('ranged') || def.tags?.includes('melee')) return '单体'
+  return '目标'
+}
+
+function displayDamage(def: ArcherSkillDef, rank: number, tier: SkillTierStats): string | undefined {
+  const meta = SKILL_DISPLAY_META[def.id]
+  const custom = meta?.damage?.(rank, tier)
+  if (custom) return custom
+  const damage = formatSkillDamage(tier)
+  if (damage === '—') return undefined
+  const type = meta?.damageType
+  return type ? `${damage} 点${type}伤害` : `${damage} 点伤害`
+}
+
+export function buildSkillTierDescription(def: ArcherSkillDef, rank: number): string {
+  const safeRank = Math.max(1, Math.min(MAX_SKILL_RANK, rank))
+  const tier = def.tiers[safeRank - 1] ?? def.tiers[0]
+  const meta = SKILL_DISPLAY_META[def.id]
+  const range = meta?.range ?? def.range
+  const target = displayTarget(def, safeRank)
+  const damage = displayDamage(def, safeRank, tier)
+  const save = meta && 'save' in meta ? resolveDisplayValue(meta.save, safeRank) : def.save
+  const effect = meta && 'effect' in meta ? resolveDisplayValue(meta.effect, safeRank) : def.effect
+  const parts = [
+    range && `范围：${range}`,
+    target && `目标：${target}`,
+    damage && `伤害：${damage}`,
+    save && `豁免：${save}`,
+    effect && `效果：${effect}`,
+  ].filter(Boolean)
+  return parts.join('。')
+}
+
 /** 该技能树节点在指定阶数是否附带击飞（敏捷豁免失败） */
 export function skillGrantsKnockback(skillTreeId: string, rank: number): boolean {
   if (skillTreeId === 'whirlwindKick') return rank >= 1
@@ -727,15 +982,7 @@ export function skillKnockbackSaveDisadvantage(skillTreeId: string, rank: number
 }
 
 export function buildSkillDescription(def: ArcherSkillDef, rank: number): string {
-  const tier = def.tiers[Math.max(0, rank - 1)] ?? def.tiers[0]
-  const parts = [
-    def.range && `范围：${def.range}`,
-    `伤害：${formatSkillDamage(tier)}`,
-    def.save && `豁免：${def.save}`,
-    def.effect && `效果：${def.effect}`,
-    tier.detail,
-  ].filter(Boolean)
-  return parts.join('。')
+  return buildSkillTierDescription(def, rank)
 }
 
 export function skillToCombatSkill(

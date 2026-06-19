@@ -8,9 +8,9 @@ import {
   type ArcherSkillDef,
   type SkillTreeDisplaySection,
   buildSkillDescription,
+  buildSkillTierDescription,
   canLearnSkill,
   canUpgradeSkillRank,
-  formatSkillDamage,
   getAvailableSkillPoints,
   getPrerequisiteLabel,
   getSkillClassRequirement,
@@ -40,14 +40,6 @@ function skillNodeState(c: Character, def: ArcherSkillDef) {
   const canLearn = canLearnSkill(c, def.id)
   const canUpgrade = canUpgradeSkillRank(c, def.id)
   return { learned, rank, levelOk, prereqOk, classOk, canLearn, canUpgrade }
-}
-
-function tierDamageText(t: ArcherSkillDef['tiers'][number]): string | null {
-  const damage = formatSkillDamage(t)
-  if (damage === '—') return null
-  const normalizedDetail = t.detail.toLowerCase().replace(/\s+/g, '')
-  if (normalizedDetail.includes(damage.toLowerCase())) return null
-  return damage
 }
 
 function SkillNode({
@@ -275,8 +267,7 @@ function SkillDetailPanel({
           <div className="mt-5 min-h-0 flex-1 overflow-y-auto">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">各等级效果</p>
             <div className="space-y-1.5">
-              {def.tiers.map((t, i) => {
-                const damage = tierDamageText(t)
+              {def.tiers.map((_, i) => {
                 return (
                   <div
                     key={i}
@@ -288,14 +279,8 @@ function SkillDetailPanel({
                     ].join(' ')}
                   >
                     <span className="font-semibold text-slate-300">{i + 1} 级</span>
-                    {damage && (
-                      <>
-                        <span className="mx-2 text-slate-600">·</span>
-                        {damage}
-                      </>
-                    )}
                     <span className="mx-2 text-slate-600">—</span>
-                    {t.detail}
+                    {buildSkillTierDescription(def, i + 1)}
                   </div>
                 )
               })}

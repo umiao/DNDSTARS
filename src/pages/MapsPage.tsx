@@ -3985,6 +3985,8 @@ export default function MapsPage() {
 
     // 范围技能确认优先于移动
     if (targeting?.aoe && activeMap && aoeCasterCell) {
+      const clickedToken = activeMap.tokens.find((t) => t.id === tokenId)
+      const clickedCell = clickedToken ? pixelToCell(clickedToken.x, clickedToken.y, activeMap) : null
       if (isSelfOriginCircleAoe(targeting.aoe)) {
         const casterToken = activeMap.tokens.find((t) => t.characterId === targeting.casterId)
         if (casterToken && tokenId === casterToken.id) {
@@ -3996,6 +3998,16 @@ export default function MapsPage() {
           resolveAoeAttack(aoeCasterCell)
           return
         }
+        return
+      }
+      if (clickedCell && canPlaceAoe(targeting.aoe, aoeCasterCell, clickedCell)) {
+        if (!isDM && sendPlayerAoeAttackRequest(clickedCell)) {
+          setTargeting(null)
+          setAoePreviewCell(null)
+          return
+        }
+        void resolveAoeAttack(clickedCell)
+        return
       }
       setSelectedTokenId(tokenId)
       return

@@ -1217,7 +1217,7 @@ export default function MapCanvas({
               hoverLabel={hoveredTokenId === t.id ? tokenHoverLabels[t.id] : undefined}
               onHoverChange={(hovered) => setHoveredTokenId(hovered ? t.id : (id) => (id === t.id ? null : id))}
               onSelect={() => {
-                if (aoeSelectMode || deleteSelectMode) return
+                if (deleteSelectMode) return
                 onSelectToken(t.id)
               }}
               onDragEnd={(x, y) => {
