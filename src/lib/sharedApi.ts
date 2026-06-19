@@ -105,6 +105,29 @@ export async function publishSharedEvent<T>(channel: string, data: T): Promise<v
   )
 }
 
+export async function clearSharedEventBacklog(channels?: string[]): Promise<void> {
+  const targets = channels && channels.length > 0 ? channels : ['_all']
+  await Promise.allSettled(
+    sharedEventApiCandidates().flatMap((api) =>
+      targets.map((channel) =>
+        fetch(`${api}/events/${encodeURIComponent(channel)}`, {
+          method: 'DELETE',
+        }),
+      ),
+    ),
+  )
+}
+
+export async function clearSharedResource(name: string): Promise<void> {
+  await Promise.allSettled(
+    sharedWriteApiCandidates().map((api) =>
+      fetch(`${api}/state/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      }),
+    ),
+  )
+}
+
 export function subscribeSharedEvent<T>(
   channel: string,
   onMessage: (data: T) => void,

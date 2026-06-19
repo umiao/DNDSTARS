@@ -160,7 +160,6 @@ export default function DiceBoxD20Overlay({
         className="dice-box-d20-frame"
         style={{ '--dice-fly-x': flyX, '--dice-fly-y': flyY } as CSSProperties}
         sandbox="allow-scripts allow-same-origin"
-        allowTransparency
       />
     </div>
   )

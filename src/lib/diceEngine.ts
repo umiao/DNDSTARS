@@ -7,12 +7,10 @@
 // things the sync layer (T-P2-397/398) will churn on:
 //
 //   1. onComplete payload shape  → DiceOutcome (values multiset + total + raw)
-//   2. exactly-once delivery     → the engine emits the SAME result three ways
-//      per roll (see dist/dice-box-threejs.es.js roll(): the config
-//      `onRollComplete` callback fires synchronously, a global 'rollComplete'
-//      document CustomEvent is dispatched, then the roll() promise resolves —
-//      all with one object). This wrapper routes those redundant sources into a
-//      single per-roll delivery slot so onComplete fires once, never thrice.
+//   2. exactly-once delivery     → use the roll() Promise as the authority.
+//      Some engine builds emit onRollComplete before the forced @ relabel is
+//      fully reflected in the returned payload/visual; trusting the Promise
+//      avoids that early-result race.
 //
 // AC3: all dice theming lives in ONE constant (DICE_THEME / DICE_ACCENT) — to
 // recolor the dice, edit the constant here and nowhere else.
@@ -89,9 +87,8 @@ export async function createDiceBox(
 ): Promise<DiceEngineBox> {
   const { scale = DICE_BASE_SCALE, theme = DICE_THEME, onComplete } = options
 
-  // Per-roll delivery slot. Both redundant sources (config callback, promise)
-  // call deliver(); the first to arrive clears the slot, so the rest are no-ops.
-  // The token guards reject paths against a stale source from a prior roll.
+  // Per-roll delivery slot. The Promise result is authoritative; the token
+  // guards reject paths against a stale source from a prior roll.
   let pending: { token: number; notation: string; settle: (o: DiceOutcome) => void } | null = null
   let seq = 0
 
@@ -113,8 +110,6 @@ export async function createDiceBox(
     light_intensity: 0.9,
     shadows: true,
     sounds: false,
-    // Source #1 of the engine's triple-emit — routed through the dedup slot.
-    onRollComplete: (raw) => deliver(raw),
   })
 
   await box.initialize?.()
@@ -127,7 +122,7 @@ export async function createDiceBox(
       const token = ++seq
       return new Promise<DiceOutcome>((resolve, reject) => {
         pending = { token, notation, settle: resolve }
-        // Source #2 — the promise. box.roll() returns undefined for malformed /
+        // box.roll() returns undefined for malformed /
         // empty notation (the engine returns no Promise in that branch); guard it.
         Promise.resolve(box.roll(notation))
           .then((raw) => {

@@ -54,7 +54,14 @@ import DiceBoxRollOverlay from '../components/DiceBoxRollOverlay'
 import { useMapStore } from '../store/maps'
 import type { Token } from '../store/maps'
 import { useCharacterStore } from '../store/characters'
-import { loadSharedResource, publishSharedEvent, saveSharedResource, subscribeSharedEvent } from '../lib/sharedApi'
+import {
+  clearSharedEventBacklog,
+  clearSharedResource,
+  loadSharedResource,
+  publishSharedEvent,
+  saveSharedResource,
+  subscribeSharedEvent,
+} from '../lib/sharedApi'
 import type { Character } from '../types/character'
 import type { ClassFeatureKey, CombatSkill } from '../types/character'
 import {
@@ -4141,11 +4148,85 @@ export default function MapsPage() {
     enemyTurnTimersRef.current = []
   }
 
-  const startCombat = () => {
+  const clearCombatMessageQueues = async (mapId: string) => {
+    seenSharedDiceIdsRef.current.clear()
+    seenDiceStreamEventIdsRef.current.clear()
+    seenRollRequestIdsRef.current.clear()
+    seenPlayerActionIdsRef.current.clear()
+    seenPlayerActionAckIdsRef.current.clear()
+    pendingDiceStreamsRef.current.clear()
+    pendingSharedDodgeRef.current = null
+    pendingSharedStableMindRef.current = null
+    setDodgePrompt(null)
+    setSharedDodgePrompt(null)
+    setSharedStableMindPrompt(null)
+    setPendingPlayerAction(null)
+    setSharedDicePreview(null)
+    setRollRequestPreview(null)
+    setDiceBoxD20(null)
+    setDiceBoxRoll(null)
+    setRoll(null)
+    afterRollRef.current = null
+
+    const updatedAt = Date.now()
+    await clearSharedEventBacklog()
+    await Promise.all([
+      clearSharedResource('dice'),
+      saveSharedResource<SharedDiceEventsState>('dice-events', { mapId, events: [], updatedAt }),
+      saveSharedResource<SharedDodgeState>('dodge', {
+        id: `${mapId}:combat-start:dodge:${updatedAt}`,
+        mapId,
+        status: 'done',
+        result: { moved: false, attacked: false, message: 'cleared' },
+        targetCharId: '',
+        updatedAt,
+      }),
+      saveSharedResource<SharedStableMindState>('stable-mind', {
+        id: `${mapId}:combat-start:stable-mind:${updatedAt}`,
+        mapId,
+        status: 'done',
+        targetCharId: '',
+        targetName: '',
+        fullDamage: 0,
+        damageAfterSave: 0,
+        saveD20: 0,
+        saveMod: 0,
+        saveTotal: 0,
+        dc: 0,
+        updatedAt,
+      }),
+      saveSharedResource<SharedPlayerActionState>('player-action', {
+        id: `${mapId}:combat-start:player-action:${updatedAt}`,
+        mapId,
+        sourceMode: 'player',
+        status: 'done',
+        type: 'end-turn',
+        actorTokenId: '',
+        characterId: '',
+        round: 1,
+        initiativeIndex: 0,
+        seq: 0,
+        updatedAt,
+      }),
+      saveSharedResource<SharedPlayerActionAckState>('player-action-ack', {
+        id: `${mapId}:combat-start:player-action-ack:${updatedAt}`,
+        mapId,
+        actionId: '',
+        status: 'accepted',
+        round: 1,
+        initiativeIndex: 0,
+        updatedAt,
+      }),
+      saveSharedResource<SharedCombatLogState>('combat-log', { mapId, entries: [], updatedAt }),
+    ])
+  }
+
+  const startCombat = async () => {
     if (!activeMap) return
     clearEnemyTurnTimers()
     setCombatLog([])
     setCombatLogOpen(true)
+    await clearCombatMessageQueues(activeMap.id)
     enemyAppliedKeysRef.current.clear()
     playerTurnStartedRef.current.clear()
     multiStrikeHitsRef.current = {}

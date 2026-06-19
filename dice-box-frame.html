@@ -134,6 +134,23 @@
         return Array.from({ length: q }, () => 1 + Math.floor(Math.random() * s))
       }
 
+      function forcedValues(qty, sides, values) {
+        if (!Array.isArray(values)) return []
+        const q = clampQty(qty)
+        const s = clampSides(sides)
+        return values
+          .map((value) => Math.max(1, Math.min(s, Math.round(Number(value)))))
+          .filter((value) => Number.isFinite(value))
+          .slice(0, q)
+      }
+
+      function sameMultiset(left, right) {
+        if (left.length !== right.length) return false
+        const a = [...left].sort((x, y) => x - y)
+        const b = [...right].sort((x, y) => x - y)
+        return a.every((value, index) => value === b[index])
+      }
+
       function postResult(kind, requestId, values, fallback) {
         rememberCompleted(requestId)
         const payload =
@@ -158,6 +175,8 @@
         if (completedRequestIds.has(requestId)) return // dedup repeat requests
 
         let settled = false
+        let retriedForMismatch = false
+        const forced = forcedValues(qty, sides, values)
         const deliver = (vals, fallback) => {
           if (settled) return
           settled = true
@@ -174,14 +193,36 @@
         try {
           const box = await getBox()
           const notation = buildNotation(qty, sides, values)
-          // box.roll resolves exactly once (wrapper dedups the engine's triple
-          // emit); outcome.values are the engine's relabeled up-faces == reported.
-          const outcome = await box.roll(notation)
-          const vals =
+          let outcome = await box.roll(notation)
+          let vals =
             Array.isArray(outcome.values) && outcome.values.length > 0
               ? outcome.values
               : fallbackValues(qty, sides)
-          deliver(vals, false)
+          if (forced.length > 0 && !sameMultiset(vals, forced)) {
+            console.warn('[dice-box-frame] forced faces mismatch; retrying roll', {
+              requestId,
+              notation,
+              expected: forced,
+              actual: vals,
+            })
+            retriedForMismatch = true
+            box.clear()
+            outcome = await box.roll(notation)
+            vals =
+              Array.isArray(outcome.values) && outcome.values.length > 0
+                ? outcome.values
+                : fallbackValues(qty, sides)
+          }
+          if (forced.length > 0 && !sameMultiset(vals, forced)) {
+            console.warn('[dice-box-frame] forced faces mismatch after retry; reporting forced values', {
+              requestId,
+              notation,
+              expected: forced,
+              actual: vals,
+            })
+            vals = forced
+          }
+          deliver(vals, retriedForMismatch)
         } catch (error) {
           console.error('[dice-box-frame] roll failed', error)
           deliver(fallbackValues(qty, sides), true)

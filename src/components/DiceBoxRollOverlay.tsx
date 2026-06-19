@@ -165,7 +165,6 @@ export default function DiceBoxRollOverlay({
         className="dice-box-damage-frame dice-box-roll-flight"
         style={{ '--dice-fly-x': flyX, '--dice-fly-y': flyY } as CSSProperties}
         sandbox="allow-scripts allow-same-origin"
-        allowTransparency
       />
     </div>
   )

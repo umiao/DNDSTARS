@@ -117,6 +117,13 @@ async function handleApi(req, res, parsed) {
   const eventMatch = parsed.pathname.match(/^\/api\/events\/([a-zA-Z0-9_-]+)$/)
   if (eventMatch) {
     const channel = safeName(eventMatch[1])
+    if (req.method === 'DELETE') {
+      if (channel === '_all') eventBacklog.clear()
+      else eventBacklog.delete(channel)
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end('{"ok":true}')
+      return true
+    }
     if (req.method === 'GET') {
       const remove = addEventClient(channel, res)
       req.on('close', remove)
@@ -159,6 +166,13 @@ async function handleApi(req, res, parsed) {
       const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
       await writeFile(tmpPath, body)
       await rename(tmpPath, filePath)
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end('{"ok":true}')
+      return true
+    }
+    if (req.method === 'DELETE') {
+      await rm(filePath, { force: true })
+      await rm(path.join(legacyStateRoot, `${name}.json`), { force: true })
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
       res.end('{"ok":true}')
       return true
