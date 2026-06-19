@@ -325,11 +325,13 @@ function RingedStatusIconBadge({
   gridIndex = 0,
   iconCanvas,
   ringColor,
+  backgroundFill = '#ffffff',
 }: {
   radius: number
   gridIndex?: number
   iconCanvas: HTMLCanvasElement
   ringColor: string
+  backgroundFill?: string
 }) {
   const size = rightBadgeSize(radius)
   const { x, y } = rightBadgeGridPos(radius, size, gridIndex)
@@ -347,7 +349,7 @@ function RingedStatusIconBadge({
         }}
         listening={false}
       >
-        <Circle radius={innerR} fill="#ffffff" listening={false} />
+        <Circle radius={innerR} fill={backgroundFill} listening={false} />
         <KonvaImage
           image={iconCanvas}
           width={size}
@@ -589,6 +591,7 @@ function PreciseStrikeBadge({ radius, gridIndex = 0 }: { radius: number; gridInd
       gridIndex={gridIndex}
       iconCanvas={iconCanvas}
       ringColor="#fb7185"
+      backgroundFill="#2a0508"
     />
   )
 }
