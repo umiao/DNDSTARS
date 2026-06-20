@@ -127,7 +127,7 @@ import {
 } from '../lib/skillTargeting'
 import { applyGridDetectPatch, detectGridFromBlob, detectImageGrid } from '../lib/gridDetect'
 import { getImage } from '../lib/imageStore'
-import { planEnemyTurn, type EnemyTurnResult } from '../lib/enemyAi'
+import { clearEnemyAiWarnings, planEnemyTurn, type EnemyTurnResult } from '../lib/enemyAi'
 import { decideDodge } from '../lib/aiPolicy'
 import {
   checkCombatOutcome,
@@ -4396,6 +4396,7 @@ export default function MapsPage() {
       void clearCombatMessageQueues(activeMap.id, { clearCombatLog: false })
     }
     clearEnemyTurnTimers()
+    clearEnemyAiWarnings() // [T7/AC6] 战斗结束清空回退告警去重集合，防止无界增长。
     setDodgePrompt(null)
     afterRollRef.current = null
     setRoll(null)
@@ -4786,12 +4787,8 @@ export default function MapsPage() {
     } else if (!targetChar && hasEnemyDamage) {
       const pendingDamage = await resolveEnemyDamageDice()
       applyTokenDamage(pendingDamage)
-    } else if (result.targetTokenPatch) {
-      updateToken(activeMap.id, result.targetTokenId, result.targetTokenPatch)
-      if (result.targetTokenPatch.hp != null && result.targetTokenPatch.hp <= 0 && result.targetTokenId) {
-        deferDeathHandling(result.targetTokenId)
-      }
     }
+    // [T7/AC4] 移除死分支：EnemyTurnResult.targetTokenPatch 从无生产者，已连同接口字段删除。
     if (result.attack) {
       const labelParts = [combatLabel, ...enemyFeatureLabels].filter(Boolean)
       const attackLabel = labelParts.length > 0

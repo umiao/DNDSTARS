@@ -12,6 +12,13 @@ import {
 } from './equipmentDefaults'
 import { isArcherLineClass } from './archerSkillTree'
 
+/**
+ * [T7/AC5/B8] 敌人 AC 缺省值的唯一真相源。
+ * 此前分散在 enemyCombatStats(??12)/combatStats(??10)/AIPage(12) 三处取值不一，
+ * 现统一为本常量，调和为 12。（EnemyDetailPanel 的 ??20 是 maxHp 回退，非 AC，不在此列。）
+ */
+export const DEFAULT_ENEMY_AC = 12
+
 /** 角色 / 敌人共用的战斗数值输入 */
 export interface CombatStatInput {
   abilities: Abilities
@@ -97,7 +104,7 @@ function sumWeaponBonuses(equipment?: CharacterEquipment): Pick<EquipmentBonuses
 export function computeAc(input: CombatStatInput): number {
   const equip = sumEquipmentBonuses(input.equipment)
   if (equip.ac > 0) return equip.ac
-  return input.acFallback ?? 10
+  return input.acFallback ?? DEFAULT_ENEMY_AC
 }
 
 /** 攻击力 = 武器攻击力 + 敏捷 × 2 */

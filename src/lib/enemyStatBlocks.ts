@@ -409,11 +409,11 @@ export const ENEMY_STAT_BLOCKS: Record<string, EnemyStatBlock> = {
     speed: '30 尺，攀爬 30 尺',
     abilities: { str: A(14), dex: A(16), con: A(12), int: A(2), wis: A(11), cha: A(4) },
     skills: [{ name: '隐匿', bonus: '+7' }],
-    senses: ' blindsight 10 尺，黑暗视觉 60 尺',
+    senses: '盲视 10 尺，黑暗视觉 60 尺',
     traits: [
       {
         name: '蛛行',
-        description: '可沿 difficult 表面攀爬，包括倒吊天花板，无需检定。',
+        description: '可沿任意表面攀爬，包括倒吊天花板，无需检定。',
       },
       {
         name: '网缚感知',
@@ -445,7 +445,7 @@ export const ENEMY_STAT_BLOCKS: Record<string, EnemyStatBlock> = {
     maxHp: 22,
     speed: '20 尺，攀爬 20 尺',
     abilities: { str: A(10), dex: A(5), con: A(16), int: A(1), wis: A(6), cha: A(2) },
-    senses: ' blindsight 60 尺（盲视外失明）',
+    senses: '盲视 60 尺（盲视外失明）',
     traits: [
       {
         name: '无定形',
@@ -453,7 +453,7 @@ export const ENEMY_STAT_BLOCKS: Record<string, EnemyStatBlock> = {
       },
       {
         name: '分裂',
-        description: '受钝击、闪电或 slashing 伤害且生命值≤0 时，分裂为两个较小史莱姆（各半生命）。',
+        description: '受钝击、闪电或挥砍伤害且生命值≤0 时，分裂为两个较小史莱姆（各半生命）。',
       },
     ],
     actions: [
@@ -635,7 +635,7 @@ export const ENEMY_STAT_BLOCKS: Record<string, EnemyStatBlock> = {
       },
       {
         name: '爪击',
-        description: '近战武器攻击：命中 +7，触及 5 尺。命中：11（2d6 + 4）slashing 伤害。',
+        description: '近战武器攻击：命中 +7，触及 5 尺。命中：11（2d6 + 4）挥砍伤害。',
         toHit: 7,
         damageDice: '2d6+4',
         damageType: 'slashing',
@@ -689,7 +689,7 @@ export const ENEMY_STAT_BLOCKS: Record<string, EnemyStatBlock> = {
     maxHp: 38,
     speed: '20 尺，飞行 40 尺',
     abilities: { str: A(12), dex: A(13), con: A(12), int: A(7), wis: A(10), cha: A(13) },
-    senses: '黑暗vision 60 尺',
+    senses: '黑暗视觉 60 尺',
     languages: '通用语',
     traits: [
       {
@@ -752,7 +752,7 @@ export const ENEMY_STAT_BLOCKS: Record<string, EnemyStatBlock> = {
     speed: '30 尺，飞行 60 尺，游泳 30 尺',
     abilities: { str: A(15), dex: A(12), con: A(13), int: A(14), wis: A(11), cha: A(13) },
     skills: [{ name: '察觉', bonus: '+4' }, { name: '欺瞒', bonus: '+4' }, { name: '隐匿', bonus: '+4' }],
-    senses: ' blindsight 10 尺，黑暗视觉 60 尺',
+    senses: '盲视 10 尺，黑暗视觉 60 尺',
     languages: '龙语',
     traits: [
       {
@@ -818,11 +818,11 @@ export const ENEMY_STAT_BLOCKS: Record<string, EnemyStatBlock> = {
     maxHp: 33,
     speed: '25 尺',
     abilities: { str: A(14), dex: A(11), con: A(13), int: A(1), wis: A(3), cha: A(1) },
-    senses: ' blindsight 60 尺（盲视外失明）',
+    senses: '盲视 60 尺（盲视外失明）',
     traits: [
       {
         name: '反魔法易伤',
-        description: '处于反魔法场中陷入失能；对 dispel magic 的豁免自动失败。',
+        description: '处于反魔法场中陷入失能；对解除魔法的豁免自动失败。',
       },
     ],
     actions: [
@@ -855,11 +855,11 @@ export const ENEMY_STAT_BLOCKS: Record<string, EnemyStatBlock> = {
     actions: [
       {
         name: '多重攻击',
-        description: '一次啃咬、一次爪击、一对 horns（若数据简化则合并为爪击）。',
+        description: '一次啃咬、一次爪击、一对触角顶撞（若数据简化则合并为爪击）。',
       },
       {
         name: '啃咬',
-        description: '近战武器攻击：命中 +4，触及 5 尺。命中：5（1d6 + 2）piercing 伤害。',
+        description: '近战武器攻击：命中 +4，触及 5 尺。命中：5（1d6 + 2）穿刺伤害。',
         toHit: 4,
         damageDice: '1d6+2',
         damageType: 'piercing',
@@ -868,7 +868,7 @@ export const ENEMY_STAT_BLOCKS: Record<string, EnemyStatBlock> = {
       },
       {
         name: '爪击',
-        description: '近战武器攻击：命中 +4，触及 5 尺。命中：5（1d6 + 2）slashing 伤害。',
+        description: '近战武器攻击：命中 +4，触及 5 尺。命中：5（1d6 + 2）挥砍伤害。',
         toHit: 4,
         damageDice: '1d6+2',
         damageType: 'slashing',

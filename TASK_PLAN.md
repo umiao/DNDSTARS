@@ -8,7 +8,9 @@ Branch: `override-upstream-gaps` (off `origin/main` @ `3b17221`). Repo: nested g
 - ✅ **T3** `ff394a0` — DOT damage + stun-skip (C1/C2)
 - ✅ **T4** `fee64ad` — vulnerable + restrained + enemy condition display (C3/C4/C5/C8); restrained-advantage deferred
 - ✅ **T5** `fe55fc6` — status label single-source + registry + condition reconcile + emoji (C6/C7/C9/C10); C11 deferred
-- ⬜ **T6** (next) → T7 → T8 → T9 → T10 → T11 → T12 → T13 → T14 → T15
+- ✅ **T6** `6070b3c` — structured attack schema + derived stats for all 25 + unified HP source (B1/B2/B9/B10); AC0: pool↔block is a bijection of 25 (stale "superset/24" premise corrected). 44→57 tests
+- ✅ **T7** — enemy AI uses real structured attacks + npc targeting + data-driven breath + DEFAULT_ENEMY_AC unified (3 sites) + stale-poolId warn-once + text hygiene (B3–B8/B11/B12); B7 dead `targetTokenPatch` branch+field removed. 57→64 tests
+- ⬜ **T8** (next) → T9 → T10 → T11 → T12 → T13 → T14 → T15
 - Each task: `npx tsc -b` + `npm test` (44 baseline) green before commit. Resume from the next ⬜ task; all context is in this file.
 
 ## Plan-review status

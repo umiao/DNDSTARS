@@ -258,3 +258,11 @@ export function stepToward(from: GridCell, to: GridCell): GridCell {
 export function isPlayerToken(t: Token): boolean {
   return t.type === 'player'
 }
+
+/**
+ * [T7/AC2] 敌人 AI 的「敌对目标」集合：玩家 + npc/友方。
+ * 排除 enemy（不打自己人）与 obstacle（障碍物）。仅有 npc 友方的遭遇不再 no-op。
+ */
+export function isHostileToEnemy(t: Token): boolean {
+  return t.type === 'player' || t.type === 'npc'
+}

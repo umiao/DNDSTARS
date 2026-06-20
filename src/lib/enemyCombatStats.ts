@@ -3,6 +3,7 @@ import type { CharacterEquipment } from '../types/equipment'
 import {
   applyAttackDefenseDamageModifier,
   computeAc,
+  DEFAULT_ENEMY_AC,
   type AttackDefenseDamageAdjust,
   type CombatStatInput,
   type DamageReductionType,
@@ -37,7 +38,7 @@ export function enemyCombatInput(poolId: string): CombatStatInput | undefined {
 
 export function getEnemyAc(poolId: string): number {
   const input = enemyCombatInput(poolId)
-  return input ? computeAc(input) : (getEnemyStatBlock(poolId)?.ac ?? 12)
+  return input ? computeAc(input) : (getEnemyStatBlock(poolId)?.ac ?? DEFAULT_ENEMY_AC)
 }
 
 /**
