@@ -235,20 +235,27 @@ export interface AttackDefenseDamageAdjust {
   modifier: number
 }
 
-/** 按攻防差值表对伤害加/减值（替代原防御力直减） */
+// [T4/C3] 脆弱：承受伤害 +25%（即「物防/魔防 -25%」承诺的机制实现）。作为攻防修正之后的
+// 最终乘子统一施加，覆盖该函数的所有分支。
+export const VULNERABLE_DAMAGE_MULTIPLIER = 1.25
+
+/** 按攻防差值表对伤害加/减值（替代原防御力直减）。defenderVulnerable=true 时再叠加脆弱乘子。 */
 export function applyAttackDefenseDamageModifier(
   baseDamage: number,
   attacker: CombatStatInput | undefined,
   defender: CombatStatInput | undefined,
   type: DamageReductionType,
+  defenderVulnerable = false,
 ): AttackDefenseDamageAdjust {
+  // defenderVulnerable 默认 false → vulnMult=1 → 对整数伤害逐字节不变（无回归）。
+  const vulnMult = defenderVulnerable ? VULNERABLE_DAMAGE_MULTIPLIER : 1
   if (type === 'true' || baseDamage <= 0 || !attacker || !defender) {
-    return { damage: baseDamage, diff: 0, modifier: 0 }
+    return { damage: Math.max(0, Math.floor(baseDamage * vulnMult)), diff: 0, modifier: 0 }
   }
   const diff = getAttackDefenseDiff(attacker, defender, type)
   const modifier = damageModifierFromAttackDefenseDiff(diff)
   return {
-    damage: Math.max(0, baseDamage + modifier),
+    damage: Math.max(0, Math.floor((baseDamage + modifier) * vulnMult)),
     diff,
     modifier,
   }

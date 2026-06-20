@@ -81,7 +81,7 @@ import {
   offerGaleCombo,
   resolvePhysicalEnemyHit,
 } from '../lib/archerBaseFeatures'
-import { TOKEN_STATUS_CLEAR_PATCH } from '../lib/combatStatus'
+import { TOKEN_STATUS_CLEAR_PATCH, isMovementLocked, isTokenMovementLocked } from '../lib/combatStatus'
 import {
   attackDamageDiceCount,
   getEffectiveAbilityMod,
@@ -2813,6 +2813,7 @@ export default function MapsPage() {
                 attackerInput,
                 characterToCombatInput(targetChar),
                 damageType,
+                (token.vulnerableTurns ?? 0) > 0, // [T4/C3]
               )
             : adjustDamageAgainstToken(total, attackerInput, token, damageType)
         const finalDamage = adjustedDamage.damage
@@ -3363,6 +3364,7 @@ export default function MapsPage() {
             attackerInput,
             characterToCombatInput(ch),
             damageType,
+            (target.vulnerableTurns ?? 0) > 0, // [T4/C3]
           ).damage
         : amount
       damageChar(target.characterId, finalAmount)
@@ -3703,6 +3705,7 @@ export default function MapsPage() {
             attacker ? characterToCombatInput(attacker) : enemyCombatInput(attackerToken.poolId ?? ''),
             characterToCombatInput(targetChar),
             'physical',
+            (targetToken.vulnerableTurns ?? 0) > 0, // [T4/C3]
           )
         : adjustDamageAgainstToken(critRaw, attacker ? characterToCombatInput(attacker) : enemyCombatInput(attackerToken.poolId ?? ''), targetToken, 'physical')
       total = adjusted.damage
@@ -3813,8 +3816,8 @@ export default function MapsPage() {
     }
 
     if (!myPlayerToken || !turnCharacter || !showMoveRange || !moveCircle) return
-    if (turnCharacter.conditions.includes(NO_MOVE_STATUS_LABEL)) {
-      alert('该角色本回合无法移动')
+    if (isMovementLocked(turnCharacter.conditions)) {
+      alert('该角色本回合无法移动') // [T4/C4/C8] no-move OR restrained
       return
     }
     const center = { x: moveCircle.centerX, y: moveCircle.centerY }
@@ -4576,6 +4579,7 @@ export default function MapsPage() {
           attackerInput,
           characterToCombatInput(targetChar),
           'physical',
+          (activeMap.tokens.find((t) => t.id === result.targetTokenId)?.vulnerableTurns ?? 0) > 0, // [T4/C3]
         )
         rawDamage = adjusted.damage
         damageRollBonus = rawDamage - diceTotal
@@ -5010,7 +5014,8 @@ export default function MapsPage() {
       return
     }
     const result = planEnemyTurn(activeMap, enemy, useCharacterStore.getState().characters, startingAp, { round })
-    if (result.newPosition) {
+    if (result.newPosition && !isTokenMovementLocked(enemy)) {
+      // [T4/C4] a restrained/no-move enemy may still attack but cannot reposition.
       if (!isStillEnemyTurn()) return
       const moveApSpent = result.moveApSpent ?? 1
       await resolveOpportunityAttacksForMove(enemy, result.newPosition)
@@ -5059,7 +5064,7 @@ export default function MapsPage() {
         if (apLeft > 0 && latestMap && latestEnemy && isTokenAlive(latestEnemy, useCharacterStore.getState().characters)) {
           if (!isStillEnemyTurn()) return
           const nextResult = planEnemyTurn(latestMap, latestEnemy, useCharacterStore.getState().characters, apLeft, { round })
-          if (nextResult.newPosition) {
+          if (nextResult.newPosition && !isTokenMovementLocked(latestEnemy)) {
             pushTimer(async () => {
               if (!isStillEnemyTurn()) return
               const moveApSpent = nextResult.moveApSpent ?? 1
@@ -5500,8 +5505,8 @@ export default function MapsPage() {
         completePlayerActionRequest(action)
         return
       }
-      if (actor.conditions.includes(NO_MOVE_STATUS_LABEL)) {
-        acknowledgePlayerAction(action, 'rejected', 'no-move')
+      if (isMovementLocked(actor.conditions)) {
+        acknowledgePlayerAction(action, 'rejected', 'no-move') // [T4/C4/C8] no-move OR restrained
         completePlayerActionRequest(action)
         return
       }

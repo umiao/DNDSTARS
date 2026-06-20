@@ -59,10 +59,11 @@ export function adjustDamageAgainstToken(
   token: Token,
   type: DamageReductionType = 'physical',
 ): AttackDefenseDamageAdjust {
-  if (!token.poolId) return { damage: baseDamage, diff: 0, modifier: 0 }
-  const defender = enemyCombatInput(token.poolId)
-  if (!defender) return { damage: baseDamage, diff: 0, modifier: 0 }
-  return applyAttackDefenseDamageModifier(baseDamage, attacker, defender, type)
+  // [T4/C3] vulnerable applies even when there's no poolId/defender (e.g. plain tokens),
+  // so route every branch through applyAttackDefenseDamageModifier with the flag.
+  const vulnerable = (token.vulnerableTurns ?? 0) > 0
+  const defender = token.poolId ? enemyCombatInput(token.poolId) : undefined
+  return applyAttackDefenseDamageModifier(baseDamage, attacker, defender, type, vulnerable)
 }
 
 export interface EnemyDerivedCombatStats {

@@ -396,6 +396,23 @@ export default function EnemyDetailPanel({
             ★ 眩晕 {token.stunTurns} 回合
           </p>
         )}
+        {/* [T4/C5] restrained/vulnerable/no-move were authoritative on the token but never
+            shown in the enemy panel — display them from the same *Turns source (no drift). */}
+        {(token.restrainedTurns ?? 0) > 0 && (
+          <p className="mt-2 rounded-lg bg-orange-500/15 px-2 py-1 text-xs text-orange-200">
+            🕸 束缚 {token.restrainedTurns} 回合
+          </p>
+        )}
+        {(token.vulnerableTurns ?? 0) > 0 && (
+          <p className="mt-2 rounded-lg bg-rose-500/15 px-2 py-1 text-xs text-rose-200">
+            💔 脆弱 {token.vulnerableTurns} 回合
+          </p>
+        )}
+        {(token.noMoveTurns ?? 0) > 0 && (
+          <p className="mt-2 rounded-lg bg-slate-500/15 px-2 py-1 text-xs text-slate-200">
+            ⛓ 无法移动 {token.noMoveTurns} 回合
+          </p>
+        )}
       </div>
     </div>
   )
