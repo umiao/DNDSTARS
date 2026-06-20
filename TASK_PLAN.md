@@ -2,6 +2,15 @@
 
 Branch: `override-upstream-gaps` (off `origin/main` @ `3b17221`). Repo: nested git repo at `DNDSTARS/`.
 
+## Execution progress (serial, main session)
+- ✅ **T2** `03955c1` — timer lifecycle + reentrancy (A6/A7/A8/A9/A10/A11/A12)
+- ✅ **T1** `8cb9ade` — NPC/obstacle deadlock auto-skip (A1/A2/BUG③)
+- ✅ **T3** `ff394a0` — DOT damage + stun-skip (C1/C2)
+- ✅ **T4** `fee64ad` — vulnerable + restrained + enemy condition display (C3/C4/C5/C8); restrained-advantage deferred
+- ✅ **T5** `fe55fc6` — status label single-source + registry + condition reconcile + emoji (C6/C7/C9/C10); C11 deferred
+- ⬜ **T6** (next) → T7 → T8 → T9 → T10 → T11 → T12 → T13 → T14 → T15
+- Each task: `npx tsc -b` + `npm test` (44 baseline) green before commit. Resume from the next ⬜ task; all context is in this file.
+
 ## Plan-review status
 Self-reviewed 2026-06-19 by a fresh-context refute-by-default reviewer (27 findings, all adjudicated & folded in): T2↔T1 reordered; T3 DOT double-apply hard-guarded; T13 export/extraction circularity closed; 3 non-bugs dropped (T10 enemyAp already-persisted, T12 F4 fallback-misread, T12 F5 percentile documented-as-designed); T11 auth made opt-in/allowlist-aware; ungrounded line/integration citations corrected; A3/A5/E2/E3/E5/E12 confirmed upstream-fixed (out of scope). Execution order: **T2→T1→T3→T4→T5→T6→T7→T8→T9→T10→T11→T12→T13→T14→T15**.
 
