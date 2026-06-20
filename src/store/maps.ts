@@ -20,7 +20,7 @@ interface SharedMapsState {
   updatedAt?: number
 }
 
-function mergePlayerTokenCombatFields(localMaps: BattleMap[], sharedMaps: BattleMap[]): BattleMap[] {
+export function mergePlayerTokenCombatFields(localMaps: BattleMap[], sharedMaps: BattleMap[]): BattleMap[] {
   const sharedMapById = new Map(sharedMaps.map((map) => [map.id, map]))
   return localMaps.map((map) => {
     const sharedMap = sharedMapById.get(map.id)

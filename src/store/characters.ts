@@ -158,7 +158,7 @@ function applyStillWatersHealingOnBreathShift(before: Character, after: Characte
   return { ...after, currentHp: Math.min(after.maxHp, after.currentHp + heal) }
 }
 
-function mergePlayerWritableCharacter(local: Character, shared: Character): Character {
+export function mergePlayerWritableCharacter(local: Character, shared: Character): Character {
   return {
     ...local,
     currentHp: shared.currentHp,

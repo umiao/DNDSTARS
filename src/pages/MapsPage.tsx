@@ -134,6 +134,8 @@ import { clearEnemyAiWarnings, planEnemyTurn, type EnemyTurnResult } from '../li
 import { decideDodge } from '../lib/aiPolicy'
 import {
   checkCombatOutcome,
+  decideTurnAction,
+  hasActionableActor,
   isTokenAlive,
   isTokenDefeated,
   pruneInitiativeForToken,
@@ -5950,7 +5952,12 @@ export default function MapsPage() {
     const token = activeMap.tokens.find((t) => t.id === entry.tokenId)
     const chars = useCharacterStore.getState().characters
 
-    if (!token) {
+    // [T1/T3 · T13] 槽位决策抽到纯函数 decideTurnAction（prune/skip/enemy/player）。effect 这里
+    // 只保留各分支的「副作用」（prune 重排、去重 key、眩晕日志、全 npc parked 守卫、定时推进）。
+    // 决策本身与 decideTurnAction 一致，便于 T13 在不挂载组件下单测。
+    const action = decideTurnAction(token, chars)
+
+    if (action === 'prune') {
       // [T2/A9] prune at top level, not inside the updater (StrictMode double-fire)
       const pruned = pruneInitiativeForToken(initiativeOrderRef.current, initiativeIndexRef.current, entry.tokenId)
       initiativeIndexRef.current = pruned.index
@@ -5961,40 +5968,40 @@ export default function MapsPage() {
       return () => window.clearTimeout(timer)
     }
 
-    if (!isTokenAlive(token, chars)) {
-      const timer = window.setTimeout(() => requestAdvance(), 50)
-      return () => window.clearTimeout(timer)
-    }
+    // 'skip' 合并三类：死亡 / 眩晕 / 存活非行动者。各自副作用保持独立（与原三分支逐字节一致）。
+    if (action === 'skip') {
+      // token 此处必非空（decideTurnAction 仅在 token 缺失时返回 'prune'）。
+      const skipToken = token!
+      // 死亡 token：直接定时推进（无去重 key，与原死亡分支一致）。
+      if (!isTokenAlive(skipToken, chars)) {
+        const timer = window.setTimeout(() => requestAdvance(), 50)
+        return () => window.clearTimeout(timer)
+      }
 
-    // [T3/C2] Stunned unit (player OR enemy) skips its entire turn. Previously stunTurns
-    // was applied/decremented/VFX'd but never checked here or in planEnemyTurn, so a
-    // stunned unit acted normally. Skipping here (before the enemy-schedule / player-begin
-    // branches) advances past it; the decrement at round-end (counter -1) restores it next
-    // round (AC5: stunTurns>0 => skip, ==0 => normal turn).
-    if ((token.stunTurns ?? 0) > 0) {
-      const stunKey = `stun-${round}-${initiativeIndex}-${token.id}`
-      if (stunSkippedKeysRef.current.has(stunKey)) return
-      stunSkippedKeysRef.current.add(stunKey)
-      pushCombatLog(`${token.label} 处于眩晕状态，跳过本回合。`, 'turn')
-      const timer = window.setTimeout(() => requestAdvance(), 50)
-      return () => window.clearTimeout(timer)
-    }
+      // [T3/C2] Stunned unit (player OR enemy) skips its entire turn. Previously stunTurns
+      // was applied/decremented/VFX'd but never checked here or in planEnemyTurn, so a
+      // stunned unit acted normally. Skipping here (before the enemy-schedule / player-begin
+      // branches) advances past it; the decrement at round-end (counter -1) restores it next
+      // round (AC5: stunTurns>0 => skip, ==0 => normal turn).
+      if ((skipToken.stunTurns ?? 0) > 0) {
+        const stunKey = `stun-${round}-${initiativeIndex}-${skipToken.id}`
+        if (stunSkippedKeysRef.current.has(stunKey)) return
+        stunSkippedKeysRef.current.add(stunKey)
+        pushCombatLog(`${skipToken.label} 处于眩晕状态，跳过本回合。`, 'turn')
+        const timer = window.setTimeout(() => requestAdvance(), 50)
+        return () => window.clearTimeout(timer)
+      }
 
-    // [T1/A1/A2/BUG③] Live non-actor (npc/obstacle) in the initiative slot. There is
-    // no enemy/player branch for it, so the round used to hang here: the player "结束回合"
-    // button is disabled on a non-player turn (canControlPlayerTurn=false) -> the player
-    // side was UNRECOVERABLY deadlocked; only the DM clicking "下一位" escaped. Auto-skip
-    // DM-side; the advance is DM-authored and broadcast via the combat snapshot, so the
-    // player advances too. The dedupe key prevents stacking skip timers across re-renders.
-    if (token.type !== 'player' && token.type !== 'enemy') {
+      // [T1/A1/A2/BUG③] Live non-actor (npc/obstacle) in the initiative slot. There is
+      // no enemy/player branch for it, so the round used to hang here: the player "结束回合"
+      // button is disabled on a non-player turn (canControlPlayerTurn=false) -> the player
+      // side was UNRECOVERABLY deadlocked; only the DM clicking "下一位" escaped. Auto-skip
+      // DM-side; the advance is DM-authored and broadcast via the combat snapshot, so the
+      // player advances too. The dedupe key prevents stacking skip timers across re-renders.
       // AC4: never spin on an all-npc queue. If no alive player/enemy actor exists at
       // all, park the round instead of advancing forever (each round mints new keys).
-      const hasActionableActor = initiativeOrder.some((e) => {
-        const t = activeMap.tokens.find((x) => x.id === e.tokenId)
-        return !!t && (t.type === 'player' || t.type === 'enemy') && isTokenAlive(t, chars)
-      })
-      if (!hasActionableActor) return
-      const skipKey = `nonactor-${round}-${initiativeIndex}-${token.id}`
+      if (!hasActionableActor(initiativeOrder, activeMap.tokens, chars)) return
+      const skipKey = `nonactor-${round}-${initiativeIndex}-${skipToken.id}`
       if (nonActorSkippedKeysRef.current.has(skipKey)) return
       nonActorSkippedKeysRef.current.add(skipKey)
       const timer = window.setTimeout(() => requestAdvance(), 50)
