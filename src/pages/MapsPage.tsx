@@ -89,7 +89,6 @@ import {
   resolveRangedAttackRoll,
 } from '../lib/archerCombat'
 
-const ENABLE_LEGACY_DICE_STREAM = false
 const PLAYER_ACTION_DEDUPE_WINDOW_MS = 8000
 import {
   applyAttackDefenseDamageModifier,
@@ -102,6 +101,12 @@ import {
   isMagicDamageSkill,
   resolveAttackDamageTotal,
 } from '../lib/combatStats'
+import {
+  CombatResolutionRunner,
+  createCombatResolutionContext,
+  type CombatResolutionSession,
+  type CombatResolutionStage,
+} from '../lib/combatResolutionPipeline'
 import { adjustDamageAgainstToken, enemyCombatInput, getTokenTargetAc } from '../lib/enemyCombatStats'
 import {
   clampGridSize,
@@ -255,9 +260,6 @@ interface SharedDiceState {
   count?: number
   sides?: number
   values?: number[]
-  diceSeed?: string
-  traceFrames?: number[][]
-  animationSeed?: string
   flyIndex?: number
   label?: string
   targetName?: string
@@ -271,56 +273,10 @@ interface SharedDiceEventsState {
   updatedAt: number
 }
 
-type SharedDiceStreamEvent =
-  | {
-      eventId: string
-      type: 'start'
-      mapId: string
-      sourceMode: Mode
-      requestId: string
-      kind: 'd20' | 'dice'
-      count?: number
-      sides?: number
-      values?: number[]
-      diceSeed?: string
-      flyIndex?: number
-      label: string
-      targetName: string
-      updatedAt: number
-    }
-  | {
-      eventId: string
-      type: 'frame'
-      mapId: string
-      sourceMode: Mode
-      requestId: string
-      kind: 'd20' | 'dice'
-      frame: number[]
-      index: number
-      updatedAt: number
-    }
-  | {
-      eventId: string
-      type: 'complete'
-      mapId: string
-      sourceMode: Mode
-      requestId: string
-      kind: 'd20' | 'dice'
-      value: number
-      values?: number[]
-      updatedAt: number
-    }
-
-type SharedDiceStreamPayload =
-  | Omit<Extract<SharedDiceStreamEvent, { type: 'start' }>, 'eventId' | 'mapId' | 'sourceMode' | 'updatedAt'>
-  | Omit<Extract<SharedDiceStreamEvent, { type: 'frame' }>, 'eventId' | 'mapId' | 'sourceMode' | 'updatedAt'>
-  | Omit<Extract<SharedDiceStreamEvent, { type: 'complete' }>, 'eventId' | 'mapId' | 'sourceMode' | 'updatedAt'>
-
-// T-P2-398 (398-A, strangler): result-broadcast path. DM emits ONE seedless
-// roll-request carrying the already-decided values; each end self-renders the
-// @values face independently. Intentionally NO seed/diceSeed field (AC2) — the
-// terminal face is carried by `values`, not reproduced from a seed. Lives on a
-// dedicated channel so it never touches the old dice-stream frame path (AC4).
+// T-P2-398 (398-A): result-broadcast path. DM emits ONE roll-request carrying
+// the already-decided values; each end self-renders the @values face
+// independently. The terminal face is carried by `values`, never reproduced
+// from a determinism field.
 interface SharedRollRequestEvent {
   eventId: string
   mapId: string
@@ -506,13 +462,13 @@ export default function MapsPage() {
   const resolvingAoeRef = useRef(false)
   const applyingSharedCombatRef = useRef(false)
   const advancingTurnRef = useRef(false)
+  const combatResolutionRunnerRef = useRef(new CombatResolutionRunner())
   const [diceBoxD20, setDiceBoxD20] = useState<{
     id: number
     label: string
     targetName: string
     value?: number
-    diceSeed?: string
-    animationSeed?: string
+    requestKey?: string
     flyIndex?: number
     resolve: (value: number) => void
   } | null>(null)
@@ -524,29 +480,12 @@ export default function MapsPage() {
     label: string
     targetName: string
     values: number[]
-    animationSeed?: string
+    requestKey?: string
     flyIndex?: number
     resolve: (values: number[]) => void
   } | null>(null)
-  const [sharedDicePreview, setSharedDicePreview] = useState<{
-    id: string
-    kind: 'd20' | 'dice'
-    count: number
-    sides: number
-    values?: number[]
-    diceSeed?: string
-    traceFrames?: number[][]
-    replayLive?: boolean
-    liveFrame?: number[]
-    liveFrameSeq?: number
-    animationSeed?: string
-    flyIndex?: number
-    label: string
-    targetName: string
-  } | null>(null)
-  // T-P2-398 (398-A): player-side self-render driven by the new roll-request
-  // broadcast. Deliberately separate from sharedDicePreview so the old
-  // dice-stream path (start/frame/complete) cannot clear or race it.
+  // T-P2-398 (398-A): player-side self-render driven by the roll-request
+  // broadcast — the sole multi-end animation path.
   const [rollRequestPreview, setRollRequestPreview] = useState<{
     id: string
     kind: 'd20' | 'dice'
@@ -562,7 +501,7 @@ export default function MapsPage() {
     const request = diceBoxD20
     const timer = window.setTimeout(() => {
       setDiceBoxD20((current) => (current?.id === request.id ? null : current))
-      request.resolve(request.value ?? seededDieValue(`${request.diceSeed ?? request.id}:timeout`, 20))
+      request.resolve(request.value ?? seededDieValue(`${request.requestKey ?? request.id}:timeout`, 20))
     }, 4500)
     return () => window.clearTimeout(timer)
   }, [diceBoxD20])
@@ -577,23 +516,12 @@ export default function MapsPage() {
     return () => window.clearTimeout(timer)
   }, [diceBoxRoll])
 
-  useEffect(() => {
-    if (!sharedDicePreview) return
-    const id = sharedDicePreview.id
-    const duration = sharedDicePreview.kind === 'd20' ? 3500 : 12000
-    const timer = window.setTimeout(() => {
-      setSharedDicePreview((current) => (current?.id === id ? null : current))
-    }, duration)
-    return () => window.clearTimeout(timer)
-  }, [sharedDicePreview])
-
   // T-P2-398 (398-A): safety auto-clear for the roll-request self-render, in
-  // case onComplete never fires (iframe stall). Longer than the overlay's own
-  // min-visible window.
+  // case onComplete never fires (iframe stall).
   useEffect(() => {
     if (!rollRequestPreview) return
     const id = rollRequestPreview.id
-    const duration = rollRequestPreview.kind === 'd20' ? 6000 : 16000
+    const duration = rollRequestPreview.kind === 'd20' ? 4500 : 16000
     const timer = window.setTimeout(() => {
       setRollRequestPreview((current) => (current?.id === id ? null : current))
     }, duration)
@@ -658,28 +586,10 @@ export default function MapsPage() {
   const recentPlayerActionKeysRef = useRef(new Map<string, number>())
   const seenPlayerActionAckIdsRef = useRef(new Set<string>())
   const seenSharedDiceIdsRef = useRef(new Set<string>())
-  const seenDiceStreamEventIdsRef = useRef(new Set<string>())
   // T-P2-398 (398-A): dedup roll-request by requestId (AC3) — same requestId
   // arriving twice (SSE fan-out to multiple local endpoints) renders once.
   const seenRollRequestIdsRef = useRef(new Set<string>())
   const combatLogSaveQueueRef = useRef(Promise.resolve())
-  const pendingDiceStreamsRef = useRef(
-    new Map<
-      string,
-      {
-        diceSeed?: string
-        flyIndex?: number
-        kind: 'd20' | 'dice'
-        count: number
-        sides: number
-        values?: number[]
-        label: string
-        targetName: string
-        firstFrame?: number[]
-        firstFrameSeq?: number
-      }
-    >(),
-  )
   const seenSharedLogIdsRef = useRef(new Set<number>())
   const combatPublishSeqRef = useRef(0)
   const combatIdRef = useRef('')
@@ -798,10 +708,6 @@ export default function MapsPage() {
     })()
   }
 
-  const publishDiceStream = (event: SharedDiceStreamPayload) => {
-    void event
-  }
-
   // T-P2-398 (398-A): broadcast the decided result once. One logical event per
   // throw (AC2); sharedApi fans it out to each local endpoint as the SSE
   // dual-send (the same eventId, deduped downstream by requestId).
@@ -821,27 +727,16 @@ export default function MapsPage() {
   const rollDiceBoxD20 = (label: string, targetName: string): Promise<number> => {
     const id = d20RequestCounterRef.current + 1
     d20RequestCounterRef.current = id
-    const diceSeed = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:d20:${Date.now()}:${id}:${label}:${targetName}`
-    const flyIndex = seededDieValue(`${diceSeed}:fly`, 8) - 1
+    const requestKey = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:d20:${Date.now()}:${id}:${label}:${targetName}`
+    const flyIndex = seededDieValue(`${requestKey}:fly`, 8) - 1
     // T-P2-398 (398-A): decide the face up front so both ends @-relabel to the
     // same value. RNG moved from the iframe physics into JS — same uniform
     // distribution, now broadcastable.
     const value = 1 + Math.floor(Math.random() * 20)
     const rollRequestId = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:rr-d20:${Date.now()}:${id}`
-    publishDiceStream({
-      type: 'start',
-      requestId: diceSeed,
-      kind: 'd20',
-      count: 1,
-      sides: 20,
-      diceSeed,
-      flyIndex,
-      label,
-      targetName,
-    })
     publishRollRequest({ requestId: rollRequestId, kind: 'd20', count: 1, sides: 20, values: [value], label, targetName })
     return new Promise((resolve) => {
-      setDiceBoxD20({ id, label, targetName, value, diceSeed, animationSeed: diceSeed, flyIndex, resolve })
+      setDiceBoxD20({ id, label, targetName, value, requestKey, flyIndex, resolve })
     })
   }
 
@@ -855,26 +750,14 @@ export default function MapsPage() {
     diceBoxRollRequestCounterRef.current = id
     const safeCount = Math.max(1, Math.min(12, Math.round(count)))
     const safeSides = Math.max(2, Math.min(100, Math.round(sides)))
-    const diceSeed = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:dice:${Date.now()}:${id}:${safeCount}d${safeSides}:${label}:${targetName}`
-    const flyIndex = seededDieValue(`${diceSeed}:fly`, 8) - 1
-    const animationSeed = diceSeed
+    const requestKey = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:dice:${Date.now()}:${id}:${safeCount}d${safeSides}:${label}:${targetName}`
+    const flyIndex = seededDieValue(`${requestKey}:fly`, 8) - 1
     // T-P2-398 (398-A): decide faces up front (see rollDiceBoxD20) and broadcast.
     const values = Array.from({ length: safeCount }, () => 1 + Math.floor(Math.random() * safeSides))
     const rollRequestId = `${mode ?? 'local'}:${activeMap?.id ?? 'map'}:rr-dice:${Date.now()}:${id}`
-    publishDiceStream({
-      type: 'start',
-      requestId: animationSeed,
-      kind: 'dice',
-      count: safeCount,
-      sides: safeSides,
-      diceSeed,
-      flyIndex,
-      label,
-      targetName,
-    })
     publishRollRequest({ requestId: rollRequestId, kind: 'dice', count: safeCount, sides: safeSides, values, label, targetName })
     return new Promise((resolve) => {
-      setDiceBoxRoll({ id, count: safeCount, sides: safeSides, label, targetName, values, animationSeed, flyIndex, resolve })
+      setDiceBoxRoll({ id, count: safeCount, sides: safeSides, label, targetName, values, requestKey, flyIndex, resolve })
     })
   }
 
@@ -1014,6 +897,50 @@ export default function MapsPage() {
   const selectedCharacterToken = activeMap?.tokens.find((t) => t.id === selectedCharacterTokenId) ?? null
   const activeChar = characters.find((c) => c.id === activeCharId) ?? null
 
+  const createCombatResolutionSessionForAction = (input: {
+    actorToken?: Token
+    targetToken?: Token
+    actorCharacterId?: string
+    targetCharacterId?: string
+    skill?: CombatSkill
+    tags?: string[]
+  }): CombatResolutionSession | null => {
+    if (!activeMap || !input.actorToken) return null
+    return combatResolutionRunnerRef.current.createSession(
+      createCombatResolutionContext({
+        round: roundRef.current,
+        map: activeMap,
+        characters: useCharacterStore.getState().characters,
+        actor: {
+          tokenId: input.actorToken.id,
+          characterId: input.actorCharacterId ?? input.actorToken.characterId,
+        },
+        primaryTarget: input.targetToken
+          ? {
+              tokenId: input.targetToken.id,
+              characterId: input.targetCharacterId ?? input.targetToken.characterId,
+            }
+          : undefined,
+        skill: input.skill,
+        tags: input.tags,
+      }),
+    )
+  }
+
+  const runCombatResolutionStage = async (
+    session: CombatResolutionSession | null,
+    stage: CombatResolutionStage,
+  ) => {
+    if (!session) return
+    const latestMap = activeMap
+      ? useMapStore.getState().maps.find((map) => map.id === activeMap.id) ?? activeMap
+      : session.context.map
+    session.context.round = roundRef.current
+    session.context.map = latestMap
+    session.context.characters = useCharacterStore.getState().characters
+    await combatResolutionRunnerRef.current.runStage(session, stage)
+  }
+
   const handleDeleteBoxConfirm = (rect: DeleteSelectionRect) => {
     if (!isDM || !activeMap) return
     const tokenIds = activeMap.tokens
@@ -1093,97 +1020,8 @@ export default function MapsPage() {
     }
   }, [activeMap?.id, mode, combatActive])
 
-  useEffect(() => {
-    if (!ENABLE_LEGACY_DICE_STREAM || !activeMap || !mode) return
-    const sourceMode = mode === 'dm' ? 'player' : 'dm'
-    const unsubscribe = subscribeSharedEvent<SharedDiceStreamEvent>(`dice-stream-${sourceMode}-to-${mode}`, (event) => {
-      if (
-        !event ||
-        event.mapId !== activeMap.id ||
-        event.sourceMode === mode ||
-        Date.now() - event.updatedAt > 60000 ||
-        seenDiceStreamEventIdsRef.current.has(event.eventId)
-      ) {
-        return
-      }
-      seenDiceStreamEventIdsRef.current.add(event.eventId)
-      if (seenDiceStreamEventIdsRef.current.size > 1200) {
-        seenDiceStreamEventIdsRef.current = new Set([...seenDiceStreamEventIdsRef.current].slice(-600))
-      }
-
-      if (event.type === 'start') {
-        const pending = {
-          diceSeed: event.diceSeed,
-          flyIndex: event.flyIndex,
-          kind: event.kind,
-          count: Math.max(1, Math.round(event.count ?? 1)),
-          sides: Math.max(2, Math.round(event.sides ?? (event.kind === 'd20' ? 20 : 6))),
-          values: event.values,
-          label: event.label,
-          targetName: event.targetName,
-        }
-        pendingDiceStreamsRef.current.set(event.requestId, pending)
-        return
-      }
-
-      if (event.type === 'frame') {
-        const pending =
-          pendingDiceStreamsRef.current.get(event.requestId) ?? {
-            diceSeed: event.requestId,
-            kind: event.kind,
-            count: 1,
-            sides: event.kind === 'd20' ? 20 : 6,
-            label: 'D20',
-            targetName: '',
-          }
-        pending.firstFrame = event.frame
-        pending.firstFrameSeq = event.index
-        pendingDiceStreamsRef.current.set(event.requestId, pending)
-        setSharedDicePreview((current) => {
-          if (current?.id === event.requestId) {
-            return {
-              ...current,
-              traceFrames: [...(current.traceFrames ?? []), event.frame].slice(-900),
-              replayLive: true,
-              liveFrame: event.frame,
-              liveFrameSeq: event.index,
-            }
-          }
-          return {
-            id: event.requestId,
-            kind: pending.kind,
-            count: pending.count,
-            sides: pending.sides,
-            values: pending.values,
-            diceSeed: pending.diceSeed ?? event.requestId,
-            traceFrames: [event.frame],
-            replayLive: true,
-            liveFrame: event.frame,
-            liveFrameSeq: event.index,
-            animationSeed: event.requestId,
-            flyIndex: pending.flyIndex,
-            label: pending.label,
-            targetName: pending.targetName,
-          }
-        })
-        return
-      }
-
-      if (event.type === 'complete') {
-        pendingDiceStreamsRef.current.delete(event.requestId)
-        if (event.kind === 'd20') {
-          window.setTimeout(() => {
-            setSharedDicePreview((current) => (current?.id === event.requestId ? null : current))
-          }, 600)
-        }
-      }
-    })
-    return unsubscribe
-  }, [activeMap?.id, mode])
-
   // T-P2-398 (398-A): subscribe to the result-broadcast channel and self-render
-  // the decided @values locally. Isolated from the old dice-stream handler
-  // above; the only state it touches is rollRequestPreview.
+  // the decided @values locally.
   useEffect(() => {
     if (!activeMap || !mode) return
     const sourceMode = mode === 'dm' ? 'player' : 'dm'
@@ -2429,6 +2267,20 @@ export default function MapsPage() {
     const targetAc = targetChar ? getAc(targetChar) : (getTokenTargetAc(token) ?? 12)
     const isRanged =
       skill.tags?.includes('ranged') || skill.name === '远程射击' || skill.name === '基础射击'
+    const resolutionSession = createCombatResolutionSessionForAction({
+      actorToken: casterToken,
+      targetToken: token,
+      actorCharacterId: casterId,
+      targetCharacterId: targetChar?.id ?? token.characterId,
+      skill,
+      tags: [
+        'player-action',
+        'attack',
+        isRanged ? 'ranged' : 'melee',
+        opts?.aoeTargetCount != null ? 'aoe-target' : 'single-target',
+      ],
+    })
+    await runCombatResolutionStage(resolutionSession, 'actionDeclared')
     if (!opts?.silent && casterToken && isBasicShot(skill)) {
       launchArrowProjectile({ x: casterToken.x, y: casterToken.y }, { x: token.x, y: token.y })
     }
@@ -2472,6 +2324,8 @@ export default function MapsPage() {
     let enemyDodgeLabel = ''
     let enemyDodgeChecked = false
 
+    await runCombatResolutionStage(resolutionSession, 'beforeAttackRoll')
+
     if (needsAttackRoll) {
       const forceCrit = !!caster!.combatBuffs?.preciseStrikeReady
       const attackAbility = skill.tags?.includes('melee') ? 'str' : 'dex'
@@ -2503,7 +2357,21 @@ export default function MapsPage() {
           }
         }
       }
+      if (resolutionSession) {
+        resolutionSession.context.attackRoll = {
+          values: atk.d20Second != null ? [attackD20, attackD20Second ?? attackD20] : [attackD20],
+          sides: 20,
+          bonus: atk.attackBonus,
+          total: atk.attackTotal,
+          ac: atk.ac,
+          hit,
+          crit: isCrit,
+          label: skill.name,
+        }
+      }
+      await runCombatResolutionStage(resolutionSession, 'attackRollResolved')
       if (hit) {
+        await runCombatResolutionStage(resolutionSession, 'beforeDamageRoll')
         const diceCount = attackDamageDiceCount(skill, !!(doubleArrow && isRanged))
         const damageSides = isBasicShot(skill) ? 8 : skill.damageSides
         values = await rollDiceBoxValues(diceCount, damageSides, `${skill.name} 伤害`, token.label)
@@ -2594,7 +2462,21 @@ export default function MapsPage() {
           }
         }
       }
+      if (resolutionSession) {
+        resolutionSession.context.attackRoll = {
+          values: [],
+          sides: 20,
+          bonus: 0,
+          total: 0,
+          ac: targetAc,
+          hit,
+          crit: isCrit,
+          label: `${skill.name} automatic`,
+        }
+      }
+      await runCombatResolutionStage(resolutionSession, 'attackRollResolved')
       if (hit) {
+        await runCombatResolutionStage(resolutionSession, 'beforeDamageRoll')
       values =
         opts?.presetDamageValues?.slice() ??
         await rollDiceBoxValues(diceCount, damageSides, `${skill.name} 伤害`, token.label)
@@ -2781,6 +2663,7 @@ export default function MapsPage() {
     let damageBeforeDefense = total
     let attackDefenseDiff: number | null = null
     let attackDefenseModifier = 0
+    let appliedDamageAmount = 0
 
     if (hit) {
       const dexMode = dexSaveDamageMode(skill.skillTreeId)
@@ -2845,6 +2728,35 @@ export default function MapsPage() {
         }
       }
       damageBeforeDefense = total
+      if (resolutionSession) {
+        const rolledTotal = values.reduce((sum, value) => sum + value, 0)
+        resolutionSession.context.damageRoll = {
+          values: [...values],
+          sides: isBasicShot(skill) ? 8 : skill.damageSides,
+          bonus: total - rolledTotal,
+          total,
+          label: skill.name,
+        }
+        resolutionSession.context.pendingDamage = [
+          {
+            id: `${resolutionSession.context.actionId}:damage:${token.id}`,
+            source: {
+              tokenId: casterToken?.id ?? '',
+              characterId: casterId,
+            },
+            target: {
+              tokenId: token.id,
+              characterId: targetChar?.id ?? token.characterId,
+            },
+            amount: total,
+            damageType: caster && isMagicDamageSkill(skill) ? 'magic' : 'physical',
+            roll: resolutionSession.context.damageRoll,
+            tags: [skill.skillTreeId ?? skill.id],
+          },
+        ]
+      }
+      await runCombatResolutionStage(resolutionSession, 'damageRolled')
+      await runCombatResolutionStage(resolutionSession, 'beforeDamageApplied')
 
       if (total > 0) {
         const damageType = caster && isMagicDamageSkill(skill) ? 'magic' : 'physical'
@@ -2863,6 +2775,7 @@ export default function MapsPage() {
         attackDefenseModifier = adjustedDamage.modifier
         damageBonusForRoll = finalDamage - values.reduce((a, b) => a + b, 0)
         total = finalDamage
+        appliedDamageAmount = finalDamage
         if (token.characterId) {
           damageChar(token.characterId, finalDamage)
           const updated = useCharacterStore.getState().characters.find((c) => c.id === token.characterId)
@@ -2878,6 +2791,28 @@ export default function MapsPage() {
           if (tokenPatch.hp <= 0) deferDeathHandling(token.id)
         }
       }
+      if (resolutionSession) {
+        resolutionSession.context.appliedDamage = appliedDamageAmount > 0
+          ? [
+              {
+                id: `${resolutionSession.context.actionId}:applied:${token.id}`,
+                source: {
+                  tokenId: casterToken?.id ?? '',
+                  characterId: casterId,
+                },
+                target: {
+                  tokenId: token.id,
+                  characterId: targetChar?.id ?? token.characterId,
+                },
+                amount: appliedDamageAmount,
+                damageType: caster && isMagicDamageSkill(skill) ? 'magic' : 'physical',
+                roll: resolutionSession.context.damageRoll,
+                tags: [skill.skillTreeId ?? skill.id],
+              },
+            ]
+          : []
+      }
+      await runCombatResolutionStage(resolutionSession, 'damageApplied')
       if (burnTurns) tokenPatch.burningTurns = burnTurns
       if (poisonTurns) tokenPatch.poisonTurns = poisonTurns
       if (
@@ -3166,6 +3101,7 @@ export default function MapsPage() {
     if (caster && tokenPatch.huntingMarkStacks === 4) {
       await triggerFinaleIfReady(caster, token)
     }
+    await runCombatResolutionStage(resolutionSession, 'afterDamageApplied')
     const extraLabels = [...featureExtraLabelParts, enemyDodgeLabel, dexSaveLabel, stunSaveLabel].filter(Boolean).join(' · ')
     const finalLabel = extraLabels ? `${rollLabel} · ${extraLabels}` : rollLabel
     const diceFormula = values.length > 0 ? values.join(' + ') : '0'
@@ -3204,6 +3140,7 @@ export default function MapsPage() {
         scheduleKnockbackRolls([knockbackPending])
       }
     }
+    await runCombatResolutionStage(resolutionSession, 'actionResolved')
     if (!opts?.skipCleanup) {
       setTargeting(null)
       setAoePreviewCell(null)
@@ -3284,6 +3221,17 @@ export default function MapsPage() {
       return
     }
 
+    const aoeResolutionSession = createCombatResolutionSessionForAction({
+      actorToken: casterToken,
+      targetToken: targets[0],
+      actorCharacterId: casterId,
+      targetCharacterId: targets[0]?.characterId,
+      skill,
+      tags: ['player-action', 'aoe', aoe.shape],
+    })
+    await runCombatResolutionStage(aoeResolutionSession, 'actionDeclared')
+    await runCombatResolutionStage(aoeResolutionSession, 'beforeDamageRoll')
+
     const hitLines: string[] = []
     const knockbackQueue: KnockbackPending[] = []
     let combinedValues: number[] = []
@@ -3319,6 +3267,33 @@ export default function MapsPage() {
       sharedValues = [...sharedValues, ...extra]
       sharedLabelParts.push(`静心+${calm.level}d6`)
     }
+    if (aoeResolutionSession) {
+      const sharedTotal = sharedValues.reduce((sum, value) => sum + value, 0) + skill.damageBonus
+      aoeResolutionSession.context.damageRoll = {
+        values: [...sharedValues],
+        sides: damageSides,
+        bonus: skill.damageBonus,
+        total: sharedTotal,
+        label: skill.name,
+      }
+      aoeResolutionSession.context.pendingDamage = targets.map((target) => ({
+        id: `${aoeResolutionSession.context.actionId}:aoe:${target.id}`,
+        source: {
+          tokenId: casterToken.id,
+          characterId: casterId,
+        },
+        target: {
+          tokenId: target.id,
+          characterId: target.characterId,
+        },
+        amount: sharedTotal,
+        damageType: isMagicDamageSkill(skill) ? 'magic' : 'physical',
+        roll: aoeResolutionSession.context.damageRoll,
+        tags: [skill.skillTreeId ?? skill.id, 'aoe'],
+      }))
+    }
+    await runCombatResolutionStage(aoeResolutionSession, 'damageRolled')
+    await runCombatResolutionStage(aoeResolutionSession, 'beforeDamageApplied')
 
     for (const token of targets) {
       const result = await resolveAttack(token, {
@@ -3347,6 +3322,24 @@ export default function MapsPage() {
       }
     }
     combinedValues = anyHit ? sharedValues : []
+    if (aoeResolutionSession) {
+      aoeResolutionSession.context.appliedDamage = hitLines.map((line, index) => ({
+        id: `${aoeResolutionSession.context.actionId}:aoe-applied:${targets[index]?.id ?? index}`,
+        source: {
+          tokenId: casterToken.id,
+          characterId: casterId,
+        },
+        target: {
+          tokenId: targets[index]?.id ?? '',
+          characterId: targets[index]?.characterId,
+        },
+        amount: Number(line.match(/\s(\d+)/)?.[1] ?? 0),
+        damageType: isMagicDamageSkill(skill) ? 'magic' : 'physical',
+        roll: aoeResolutionSession.context.damageRoll,
+        tags: [skill.skillTreeId ?? skill.id, 'aoe'],
+      }))
+    }
+    await runCombatResolutionStage(aoeResolutionSession, 'damageApplied')
 
     if (skill.skillTreeId === 'windTraceShot' && skillRank >= 4 && isCalmMindActive(caster)) {
       selfCooldownReduction = Math.max(selfCooldownReduction, 1)
@@ -3383,6 +3376,8 @@ export default function MapsPage() {
     if (knockbackQueue.length > 0) {
       scheduleKnockbackRolls(knockbackQueue)
     }
+    await runCombatResolutionStage(aoeResolutionSession, 'afterDamageApplied')
+    await runCombatResolutionStage(aoeResolutionSession, 'actionResolved')
     resolvingAoeRef.current = false
   }
 
@@ -4341,18 +4336,15 @@ export default function MapsPage() {
     options: { clearCombatLog?: boolean; combatId?: string } = {},
   ) => {
     seenSharedDiceIdsRef.current.clear()
-    seenDiceStreamEventIdsRef.current.clear()
     seenRollRequestIdsRef.current.clear()
     seenPlayerActionIdsRef.current.clear()
     seenPlayerActionAckIdsRef.current.clear()
-    pendingDiceStreamsRef.current.clear()
     pendingSharedDodgeRef.current = null
     pendingSharedStableMindRef.current = null
     setDodgePrompt(null)
     setSharedDodgePrompt(null)
     setSharedStableMindPrompt(null)
     setPendingPlayerActionLocked(null)
-    setSharedDicePreview(null)
     setRollRequestPreview(null)
     setDiceBoxD20(null)
     setDiceBoxRoll(null)
@@ -4622,6 +4614,19 @@ export default function MapsPage() {
     let damageRollBonus = result.attack?.bonus ?? 0
     let damageDiceResolved = false
     const enemyFeatureLabels: string[] = []
+    const enemyActorToken = activeMap.tokens.find((t) => t.id === result.attackerTokenId)
+    const enemyTargetToken = activeMap.tokens.find((t) => t.id === result.targetTokenId)
+    const enemyResolutionSession = createCombatResolutionSessionForAction({
+      actorToken: enemyActorToken,
+      targetToken: enemyTargetToken,
+      actorCharacterId: enemyActorToken?.characterId,
+      targetCharacterId: targetChar?.id ?? result.targetCharacterId ?? enemyTargetToken?.characterId,
+      skill: undefined,
+      tags: ['enemy-action', result.damageType ?? 'physical'],
+    })
+    const runEnemyStage = (stage: CombatResolutionStage) =>
+      runCombatResolutionStage(enemyResolutionSession, stage)
+    await runEnemyStage('actionDeclared')
 
     const inferEnemyDamageDiceCount = (attack: NonNullable<EnemyTurnResult['attack']>) => {
       if (attack.values.length > 0) return attack.values.length
@@ -4642,10 +4647,43 @@ export default function MapsPage() {
       )
     }
 
+    const updateEnemyDamageContext = (amount: number) => {
+      if (!enemyResolutionSession || !result.attack) return
+      const rollTotal = damageRollValues.reduce((sum, value) => sum + value, 0)
+      enemyResolutionSession.context.damageRoll = {
+        values: [...damageRollValues],
+        sides: result.attack.sides,
+        bonus: damageRollBonus,
+        total: amount,
+        label: result.attack.label,
+      }
+      enemyResolutionSession.context.pendingDamage = [
+        {
+          id: `${enemyResolutionSession.context.actionId}:damage:${result.targetTokenId ?? 'target'}`,
+          source: {
+            tokenId: result.attackerTokenId,
+            characterId: enemyActorToken?.characterId,
+          },
+          target: {
+            tokenId: result.targetTokenId ?? '',
+            characterId: targetChar?.id ?? result.targetCharacterId ?? enemyTargetToken?.characterId,
+          },
+          amount,
+          damageType: result.damageType ?? 'physical',
+          roll: enemyResolutionSession.context.damageRoll,
+          tags: ['enemy-damage'],
+        },
+      ]
+      if (rollTotal !== amount) {
+        enemyResolutionSession.context.scratch.damageAdjustment = amount - rollTotal
+      }
+    }
+
     const resolveEnemyDamageDice = async () => {
       if (!result.attack || result.damage == null || result.damage <= 0) {
         return result.damage ?? 0
       }
+      await runEnemyStage('beforeDamageRoll')
       let values = await rollEnemyBaseDamageDice()
       const attackerToken = activeMap.tokens.find((t) => t.id === result.attackerTokenId)
       const huntedByTargetRank = huntingMarkTraitRank(targetChar)
@@ -4682,6 +4720,8 @@ export default function MapsPage() {
       }
       damageRollTotal = Math.max(0, rawDamage)
       damageDiceResolved = true
+      updateEnemyDamageContext(damageRollTotal)
+      await runEnemyStage('damageRolled')
       return damageRollTotal
     }
 
@@ -4752,10 +4792,12 @@ export default function MapsPage() {
 
     if (targetChar && hasEnemyDamage) {
       const damageType = result.damageType ?? 'physical'
+      await runEnemyStage('beforeAttackRoll')
 
       if (damageType === 'aoe') {
         let estimatedDamage = Math.max(1, result.damage ?? result.attack?.total ?? 0)
         if (result.attack) {
+          await runEnemyStage('beforeDamageRoll')
           const values = await rollEnemyBaseDamageDice()
           damageRollValues = values
           const diceTotal = values.reduce((sum, value) => sum + value, 0)
@@ -4763,6 +4805,8 @@ export default function MapsPage() {
           damageRollTotal = Math.max(0, diceTotal + result.attack.bonus)
           damageDiceResolved = true
           estimatedDamage = Math.max(1, damageRollTotal)
+          updateEnemyDamageContext(damageRollTotal)
+          await runEnemyStage('damageRolled')
         }
         const saveD20 = await rollDiceBoxD20('敏捷豁免 D20', targetChar.name)
         const save = resolveDexSaveDamage(
@@ -4796,8 +4840,35 @@ export default function MapsPage() {
           hit: save.success,
           kind: 'save',
         }
+        if (enemyResolutionSession) {
+          enemyResolutionSession.context.attackRoll = {
+            values: [save.saveD20],
+            sides: 20,
+            bonus: save.saveMod,
+            total: save.saveTotal,
+            ac: save.dc,
+            hit: save.success,
+            crit: false,
+            label: 'dex-save',
+          }
+        }
+        await runEnemyStage('attackRollResolved')
         if (finalDamage > 0) {
+          if (enemyResolutionSession) {
+            enemyResolutionSession.context.pendingDamage = enemyResolutionSession.context.pendingDamage.map((packet) => ({
+              ...packet,
+              amount: finalDamage,
+            }))
+          }
+          await runEnemyStage('beforeDamageApplied')
           applyFullDamage(targetChar.id, finalDamage)
+          if (enemyResolutionSession) {
+            enemyResolutionSession.context.appliedDamage = enemyResolutionSession.context.pendingDamage.map((packet) => ({
+              ...packet,
+              amount: finalDamage,
+            }))
+          }
+          await runEnemyStage('damageApplied')
         }
       } else if (wantsDodge != null) {
         const estimatedDamage = Math.max(1, result.damage ?? result.attack?.total ?? 0)
@@ -4841,9 +4912,47 @@ export default function MapsPage() {
             source: 'dice-box',
           }
         }
+        if (enemyResolutionSession) {
+          enemyResolutionSession.context.attackRoll = d20Roll
+            ? {
+                values: [d20Roll.value],
+                sides: 20,
+                bonus: d20Roll.modifier,
+                total: d20Roll.value + d20Roll.modifier,
+                ac: d20Roll.ac,
+                hit: d20Roll.hit,
+                crit: false,
+                label: 'dodge',
+              }
+            : {
+                values: [],
+                sides: 20,
+                bonus: 0,
+                total: 0,
+                ac: targetChar.ac,
+                hit: !resolved.dodged,
+                crit: false,
+                label: 'no-dodge',
+              }
+        }
+        await runEnemyStage('attackRollResolved')
         if (!resolved.dodged && resolved.damageDealt > 0) {
           const pendingDamage = await resolveEnemyDamageDice()
+          if (enemyResolutionSession) {
+            enemyResolutionSession.context.pendingDamage = enemyResolutionSession.context.pendingDamage.map((packet) => ({
+              ...packet,
+              amount: pendingDamage,
+            }))
+          }
+          await runEnemyStage('beforeDamageApplied')
           applyFullDamage(targetChar.id, pendingDamage)
+          if (enemyResolutionSession) {
+            enemyResolutionSession.context.appliedDamage = enemyResolutionSession.context.pendingDamage.map((packet) => ({
+              ...packet,
+              amount: pendingDamage,
+            }))
+          }
+          await runEnemyStage('damageApplied')
         }
         if (resolved.dodged) {
           damageRollValues = []
@@ -4858,15 +4967,59 @@ export default function MapsPage() {
         }
       }
     } else if (result.targetCharacterId != null && hasEnemyDamage) {
+      await runEnemyStage('beforeAttackRoll')
+      if (enemyResolutionSession) {
+        enemyResolutionSession.context.attackRoll = {
+          values: [],
+          sides: 20,
+          bonus: 0,
+          total: 0,
+          ac: 0,
+          hit: true,
+          crit: false,
+          label: 'direct-damage',
+        }
+      }
+      await runEnemyStage('attackRollResolved')
       const pendingDamage = await resolveEnemyDamageDice()
+      await runEnemyStage('beforeDamageApplied')
       applyFullDamage(result.targetCharacterId, pendingDamage)
+      if (enemyResolutionSession) {
+        enemyResolutionSession.context.appliedDamage = enemyResolutionSession.context.pendingDamage.map((packet) => ({
+          ...packet,
+          amount: pendingDamage,
+        }))
+      }
+      await runEnemyStage('damageApplied')
       const fallback = useCharacterStore.getState().characters.find((c) => c.id === result.targetCharacterId)
       if (fallback && fallback.currentHp <= 0 && result.targetTokenId) {
         deferDeathHandling(result.targetTokenId, result.targetCharacterId)
       }
     } else if (!targetChar && hasEnemyDamage) {
+      await runEnemyStage('beforeAttackRoll')
+      if (enemyResolutionSession) {
+        enemyResolutionSession.context.attackRoll = {
+          values: [],
+          sides: 20,
+          bonus: 0,
+          total: 0,
+          ac: 0,
+          hit: true,
+          crit: false,
+          label: 'direct-token-damage',
+        }
+      }
+      await runEnemyStage('attackRollResolved')
       const pendingDamage = await resolveEnemyDamageDice()
+      await runEnemyStage('beforeDamageApplied')
       applyTokenDamage(pendingDamage)
+      if (enemyResolutionSession) {
+        enemyResolutionSession.context.appliedDamage = enemyResolutionSession.context.pendingDamage.map((packet) => ({
+          ...packet,
+          amount: pendingDamage,
+        }))
+      }
+      await runEnemyStage('damageApplied')
     } else if (result.targetTokenPatch) {
       updateToken(activeMap.id, result.targetTokenId, result.targetTokenPatch)
       if (result.targetTokenPatch.hp != null && result.targetTokenPatch.hp <= 0 && result.targetTokenId) {
@@ -4899,6 +5052,8 @@ export default function MapsPage() {
         damageRollTotal > 0 ? 'damage' : 'attack',
       )
     }
+    await runEnemyStage('afterDamageApplied')
+    await runEnemyStage('actionResolved')
   }
 
   const applyEnemyAttack = (result: EnemyTurnResult, onComplete: () => void) => {
@@ -6458,57 +6613,21 @@ export default function MapsPage() {
           )}
 
           {roll && <DiceRollOverlay roll={roll} onDone={handleRollDone} />}
-          {((ENABLE_LEGACY_DICE_STREAM && sharedDicePreview?.kind === 'd20') || !!diceBoxD20) && <DiceBoxD20Overlay
-            key={
-              ENABLE_LEGACY_DICE_STREAM && sharedDicePreview?.kind === 'd20'
-                ? `shared-d20-${sharedDicePreview.id}`
-                : diceBoxD20
-                  ? `local-d20-${diceBoxD20.id}`
-                  : 'idle-d20'
-            }
-            active
-            label={ENABLE_LEGACY_DICE_STREAM && sharedDicePreview?.kind === 'd20' ? sharedDicePreview.label : diceBoxD20?.label ?? 'D20'}
-            targetName={ENABLE_LEGACY_DICE_STREAM && sharedDicePreview?.kind === 'd20' ? sharedDicePreview.targetName : diceBoxD20?.targetName ?? ''}
-            value={ENABLE_LEGACY_DICE_STREAM && sharedDicePreview?.kind === 'd20' ? sharedDicePreview.values?.[0] : diceBoxD20?.value}
-            requestId={
-              ENABLE_LEGACY_DICE_STREAM && sharedDicePreview?.kind === 'd20'
-                ? sharedDicePreview.animationSeed ?? sharedDicePreview.id
-                : diceBoxD20?.animationSeed
-            }
-            flyIndex={ENABLE_LEGACY_DICE_STREAM && sharedDicePreview?.kind === 'd20' ? sharedDicePreview.flyIndex : diceBoxD20?.flyIndex}
-            onComplete={(value) => {
-              if (ENABLE_LEGACY_DICE_STREAM && sharedDicePreview?.kind === 'd20') {
-                const id = sharedDicePreview.id
-                window.setTimeout(() => {
-                  setSharedDicePreview((current) => (current?.id === id ? null : current))
-                }, 1000)
-                return
-              }
-              if (diceBoxD20) {
+          {diceBoxD20 && (
+            <DiceBoxD20Overlay
+              key={`local-d20-${diceBoxD20.id}`}
+              active
+              label={diceBoxD20.label ?? 'D20'}
+              targetName={diceBoxD20.targetName ?? ''}
+              value={diceBoxD20.value}
+              requestId={diceBoxD20.requestKey}
+              flyIndex={diceBoxD20.flyIndex}
+              onComplete={(value) => {
                 const request = diceBoxD20
                 request.resolve(value)
                 window.setTimeout(() => {
                   setDiceBoxD20((current) => (current?.id === request.id ? null : current))
                 }, 600)
-              }
-            }}
-          />}
-          {ENABLE_LEGACY_DICE_STREAM && sharedDicePreview?.kind === 'dice' && (
-            <DiceBoxRollOverlay
-              key={sharedDicePreview.id}
-              count={sharedDicePreview.count}
-              sides={sharedDicePreview.sides}
-              label={sharedDicePreview.label}
-              targetName={sharedDicePreview.targetName}
-              values={sharedDicePreview.values}
-              requestId={sharedDicePreview.animationSeed ?? sharedDicePreview.id}
-              flyIndex={sharedDicePreview.flyIndex}
-              showHud={false}
-              onComplete={() => {
-                const id = sharedDicePreview.id
-                window.setTimeout(() => {
-                  setSharedDicePreview((current) => (current?.id === id ? null : current))
-                }, 3000)
               }}
             />
           )}
@@ -6520,7 +6639,7 @@ export default function MapsPage() {
               label={diceBoxRoll.label}
               targetName={diceBoxRoll.targetName}
               values={diceBoxRoll.values}
-              requestId={diceBoxRoll.animationSeed}
+              requestId={diceBoxRoll.requestKey}
               flyIndex={diceBoxRoll.flyIndex}
               showHud={false}
               onComplete={(values) => {

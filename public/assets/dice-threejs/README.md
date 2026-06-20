@@ -3,8 +3,9 @@
 This directory is the permanent `assetPath` base for `@3d-dice/dice-box-threejs`,
 established by the T-P2-395 spike and consumed by T-P2-396..398.
 
-**Do NOT delete this directory in the T-P2-400 cleanup task** — only the
-`/dice-spike` route and `src/pages/DiceSpikePage.tsx` are temporary.
+**Do NOT delete this directory in cleanup tasks.** The old `/dice-spike` route
+and `src/pages/DiceSpikePage.tsx` spike page have been removed; this asset path
+is still the permanent base for the active dice engine.
 
 ## Why it is (currently) empty of binary assets
 

@@ -168,6 +168,23 @@ export interface CombatResolutionResult {
   interrupts: CombatInterruptRequest[]
 }
 
+export class CombatResolutionSession {
+  readonly mutations: CombatMutation[] = []
+  readonly interrupts: CombatInterruptRequest[] = []
+  readonly onceKeys = new Set<string>()
+
+  constructor(readonly context: CombatResolutionContext) {}
+
+  result(): CombatResolutionResult {
+    return {
+      actionId: this.context.actionId,
+      context: this.context,
+      mutations: [...this.mutations],
+      interrupts: [...this.interrupts],
+    }
+  }
+}
+
 export interface CombatResolutionBridge {
   requestInterrupt(request: CombatInterruptRequest): Promise<CombatInterruptResponse>
 }
@@ -251,47 +268,53 @@ export class CombatResolutionRunner {
     return next
   }
 
-  private async run(ctx: CombatResolutionContext): Promise<CombatResolutionResult> {
-    const mutations: CombatMutation[] = []
-    const interrupts: CombatInterruptRequest[] = []
-    const onceKeys = new Set<string>()
+  createSession(ctx: CombatResolutionContext): CombatResolutionSession {
+    return new CombatResolutionSession(ctx)
+  }
+
+  async runStage(
+    session: CombatResolutionSession,
+    stage: CombatResolutionStage,
+  ): Promise<CombatResolutionResult> {
+    const ctx = session.context
+    ctx.stage = stage
 
     const api: CombatResolutionApi = {
-      enqueueMutation: (mutation) => mutations.push(mutation),
+      enqueueMutation: (mutation) => session.mutations.push(mutation),
       requestInterrupt: async (request) => {
         const fullRequest: CombatInterruptRequest = {
           ...request,
-          id: `${ctx.actionId}:${ctx.stage}:${interrupts.length + 1}`,
+          id: `${ctx.actionId}:${ctx.stage}:${session.interrupts.length + 1}`,
           actionId: ctx.actionId,
           stage: ctx.stage,
         }
-        interrupts.push(fullRequest)
+        session.interrupts.push(fullRequest)
         return this.bridge.requestInterrupt(fullRequest)
       },
-      hasRunOnce: (key) => onceKeys.has(key),
-      markRunOnce: (key) => onceKeys.add(key),
+      hasRunOnce: (key) => session.onceKeys.has(key),
+      markRunOnce: (key) => session.onceKeys.add(key),
     }
 
+    await this.onStageStart?.(ctx)
+    const stageHooks = this.hooks.filter((hook) => hook.stage === stage)
+    for (const hook of stageHooks) {
+      const onceKey = hook.onceKey?.(ctx)
+      if (onceKey && session.onceKeys.has(onceKey)) continue
+      if (!hook.canRun(ctx)) continue
+      if (onceKey) session.onceKeys.add(onceKey)
+      await hook.run(ctx, api)
+    }
+    await this.onStageEnd?.(ctx, session.mutations)
+
+    return session.result()
+  }
+
+  private async run(ctx: CombatResolutionContext): Promise<CombatResolutionResult> {
+    const session = this.createSession(ctx)
     for (const stage of COMBAT_RESOLUTION_STAGES) {
-      ctx.stage = stage
-      await this.onStageStart?.(ctx)
-      const stageHooks = this.hooks.filter((hook) => hook.stage === stage)
-      for (const hook of stageHooks) {
-        const onceKey = hook.onceKey?.(ctx)
-        if (onceKey && onceKeys.has(onceKey)) continue
-        if (!hook.canRun(ctx)) continue
-        if (onceKey) onceKeys.add(onceKey)
-        await hook.run(ctx, api)
-      }
-      await this.onStageEnd?.(ctx, mutations)
+      await this.runStage(session, stage)
     }
-
-    return {
-      actionId: ctx.actionId,
-      context: ctx,
-      mutations,
-      interrupts,
-    }
+    return session.result()
   }
 }
 
