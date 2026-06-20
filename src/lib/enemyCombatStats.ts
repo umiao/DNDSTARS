@@ -17,7 +17,7 @@ import {
   hasAnyEquipment,
 } from './combatStats'
 import { EQUIPMENT_SLOT_LABELS, EQUIPMENT_SLOTS } from './equipmentDefaults'
-import { getEnemyStatBlock, type EnemyStatBlock } from './enemyStatBlocks'
+import { getEnemyStatBlock, getPrimaryAttackAction, type EnemyStatBlock } from './enemyStatBlocks'
 
 export function enemyHasDerivedCombat(poolId?: string): boolean {
   if (!poolId) return false
@@ -40,9 +40,15 @@ export function getEnemyAc(poolId: string): number {
   return input ? computeAc(input) : (getEnemyStatBlock(poolId)?.ac ?? 12)
 }
 
+/**
+ * [T6/B9/B10] HP 真相源统一：所有怪物的最大生命值都来自 stat block 的 `maxHp`
+ * 字段（与 ENEMY_POOL 模板一致，由 parity 测试守护）。装备派生路径（goblin/hobgoblin）
+ * 当前其 computeMaxHp 结果已与模板一致；为保持单一真相源，统一读取 block.maxHp，
+ * 仅在无 stat block 时回退到 fallback。
+ */
 export function getEnemyMaxHp(poolId: string, fallback = 12): number {
-  const input = enemyCombatInput(poolId)
-  if (input) return computeMaxHp(input)
+  const block = getEnemyStatBlock(poolId)
+  if (block) return block.maxHp
   return fallback
 }
 
@@ -74,21 +80,63 @@ export interface EnemyDerivedCombatStats {
   magicDefense: number
   maxHp: number
   critDamagePercent: string
-  equipment: CharacterEquipment
+  /** [T6/B1] 主攻击命中加值（来自 stat block 结构化动作；无则 undefined） */
+  toHit?: number
+  /** [T6/B1] 主攻击伤害骰（如 '1d6+2'；无则 undefined） */
+  damageDice?: string
+  /** [T6/B1] 主攻击伤害类型 */
+  damageType?: string
+  /** [T6/B1] 主攻击名称（用于面板展示） */
+  attackName?: string
+  /** 装备派生路径（goblin/hobgoblin）才有；其余怪物从属性派生时为 undefined */
+  equipment?: CharacterEquipment
 }
 
+/**
+ * [T6/B1] 派生战斗数值。
+ * - 装备路径（goblin/hobgoblin）：沿用原装备公式（AC5 不回归）。
+ * - 无装备路径（其余怪物）：从 abilities + stat block 的 `maxHp`/`ac` + 主攻击派生，
+ *   不再因缺少 equipment 而返回 undefined（AC3）。
+ * 任一路径都附带主攻击的 toHit/damageDice/damageType，供面板渲染命中+伤害。
+ */
 export function getEnemyDerivedCombatStats(poolId: string): EnemyDerivedCombatStats | undefined {
-  const input = enemyCombatInput(poolId)
-  if (!input?.equipment) return undefined
+  const block = getEnemyStatBlock(poolId)
+  if (!block) return undefined
+  const primary = getPrimaryAttackAction(block)
+  const attackFields = {
+    toHit: primary?.toHit,
+    damageDice: primary?.damageDice,
+    damageType: primary?.damageType,
+    attackName: primary?.name,
+  }
+
+  const equipInput = enemyCombatInput(poolId)
+  if (equipInput?.equipment) {
+    // 装备派生路径：与原实现逐字节一致（AC5 回归锚点）。
+    return {
+      ac: computeAc(equipInput),
+      physicalAttack: computePhysicalAttack(equipInput),
+      defense: Math.round(computeDefense(equipInput)),
+      magicAttack: computeMagicAttack(equipInput),
+      magicDefense: Math.round(computeMagicDefense(equipInput)),
+      maxHp: computeMaxHp(equipInput),
+      critDamagePercent: formatCritDamagePercentFromInput(equipInput),
+      equipment: equipInput.equipment,
+      ...attackFields,
+    }
+  }
+
+  // 无装备路径：从属性派生（equipment 缺省 → 装备加成为 0）。
+  const input: CombatStatInput = { abilities: block.abilities, acFallback: block.ac }
   return {
-    ac: computeAc(input),
+    ac: computeAc(input), // 无装备 → 回退 stat block AC
     physicalAttack: computePhysicalAttack(input),
     defense: Math.round(computeDefense(input)),
     magicAttack: computeMagicAttack(input),
     magicDefense: Math.round(computeMagicDefense(input)),
-    maxHp: computeMaxHp(input),
+    maxHp: block.maxHp, // HP 真相源（B9/B10）
     critDamagePercent: formatCritDamagePercentFromInput(input),
-    equipment: input.equipment,
+    ...attackFields,
   }
 }
 

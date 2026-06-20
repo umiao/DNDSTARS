@@ -250,6 +250,29 @@ export default function EnemyDetailPanel({
               </section>
             )}
 
+            {/* [T6/B1] 主攻击命中 + 伤害：对所有怪物渲染（含 ogre/owlbear 等无装备怪）。 */}
+            {derived?.damageDice && (
+              <section className="mb-4">
+                <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <Swords className="h-3.5 w-3.5" />
+                  主攻击
+                </h3>
+                <div className="flex flex-wrap items-center gap-2 rounded-xl bg-rose-500/10 px-3 py-2">
+                  {derived.attackName && (
+                    <span className="text-sm font-medium text-rose-200">{derived.attackName}</span>
+                  )}
+                  {derived.toHit != null && (
+                    <span className="rounded bg-white/5 px-1.5 py-0.5 text-xs tabular-nums text-slate-200">
+                      命中 {derived.toHit >= 0 ? `+${derived.toHit}` : derived.toHit}
+                    </span>
+                  )}
+                  <span className="rounded bg-white/5 px-1.5 py-0.5 text-xs tabular-nums text-slate-200">
+                    伤害 {derived.damageDice}
+                  </span>
+                </div>
+              </section>
+            )}
+
             {token.poolId && getEnemyEquipmentSlots(token.poolId).some((s) => s.name) && (
               <section className="mb-4">
                 <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
