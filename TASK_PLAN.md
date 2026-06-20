@@ -15,8 +15,9 @@ Branch: `override-upstream-gaps` (off `origin/main` @ `3b17221`). Repo: nested g
 - ✅ **T10** `75aead0` — canonical characterHpTokenPatch HP mirror (no parallel reconciler) + character deletion tombstones (sync save, 10s GC) + maps store version 1 + migrate + enemyAp torn-read hardening (E4/E11/E10/E13). 68→81 tests
 - ✅ **T11** `91a6ad4` — shared-server-core.mjs (lockfile wx+10s-stale, OPT-IN STARS_SHARED_SECRET default-off byte-equiv + player allowlist preserved, 8MiB/24MiB caps + 100-replay, image quota 64 + player orphan GC, collision-safe safeName + static-server 404, decideApply monotonic guard player-side) (E1/E6/E7/E8/E9/E14). 81→115 tests
 - ✅ **T12** `9650182` — deleted dead d20Geometry.ts + write-only fields + dead archerCombat fallback RNGs (tsc-proven unreachable) + diceOverlayShared.ts (FLY_OFFSETS/stableIndex/handshake one definition) + DICE_TIMING cross-component contract (advance 4200 ≥ resolution 4000) (F1-F4/F6); F5 percentile DROPPED untouched. 115→121 tests
-- ✅ **T13** — live-engine regression net: extracted+WIRED decideTurnAction/hasActionableActor (turn-driver, byte-identical precedence) + AC0 exports (mergePlayerWritableCharacter/mergePlayerTokenCombatFields) + coverage of T1–T4/T10 live code (G2). Caveat: pruneRecovery extracted+tested as a pure MIRROR (not wired into MapsPage's inline A11). 121→148 tests. **T15 greenlit** (real coverage delivered)
-- ⬜ **T14** (next) → T15
+- ✅ **T13** `efde0ba` — live-engine regression net: extracted+WIRED decideTurnAction/hasActionableActor (turn-driver, byte-identical precedence) + AC0 exports (mergePlayerWritableCharacter/mergePlayerTokenCombatFields) + coverage of T1–T4/T10 live code (G2). Caveat: pruneRecovery extracted+tested as a pure MIRROR (not wired into MapsPage's inline A11). 121→148 tests. **T15 greenlit** (real coverage delivered)
+- ✅ **T14** — enabled strictNullChecks (isolated; other strict sub-flags deferred w/ note in STRICT_NULL_CHECKS.md) (G1). Surfaced **0 errors** — codebase already over-guards (defensive `?? fallback` growth); flag verified live via an independent string|null→string probe (TS2322/TS18048). Zero source edits, zero escape-hatches. 148 tests
+- ⬜ **T15** (next, final)
 - Each task: `npx tsc -b` + `npm test` (44 baseline) green before commit. Resume from the next ⬜ task; all context is in this file.
 
 ## Plan-review status
