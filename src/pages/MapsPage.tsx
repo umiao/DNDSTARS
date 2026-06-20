@@ -640,6 +640,9 @@ export default function MapsPage() {
   const [showMoveRange, setShowMoveRange] = useState(false)
   const [disengagedCharIds, setDisengagedCharIds] = useState<Set<string>>(() => new Set())
   const enemyAppliedKeysRef = useRef(new Set<string>())
+  // [T1] dedupe set so the turn-driver doesn't stack multiple skip timers for the
+  // same npc/obstacle slot across re-renders. Cleared on combat start/end.
+  const nonActorSkippedKeysRef = useRef(new Set<string>())
   const enemyTurnTimersRef = useRef<number[]>([])
   const pendingSharedDodgeRef = useRef<{
     id: string
@@ -4316,6 +4319,7 @@ export default function MapsPage() {
     setCombatLogOpen(true)
     await clearCombatMessageQueues(activeMap.id, { clearCombatLog: true, combatId: nextCombatId })
     enemyAppliedKeysRef.current.clear()
+    nonActorSkippedKeysRef.current.clear()
     playerTurnStartedRef.current.clear()
     multiStrikeHitsRef.current = {}
     setDisengagedCharIds(new Set())
@@ -4380,6 +4384,7 @@ export default function MapsPage() {
     initiativeIndexRef.current = 0
     setInitiativeScroll(0)
     enemyAppliedKeysRef.current.clear()
+    nonActorSkippedKeysRef.current.clear()
     playerTurnStartedRef.current.clear()
     multiStrikeHitsRef.current = {}
     setDisengagedCharIds(new Set())
@@ -5847,6 +5852,27 @@ export default function MapsPage() {
     }
 
     if (!isTokenAlive(token, chars)) {
+      const timer = window.setTimeout(() => requestAdvance(), 50)
+      return () => window.clearTimeout(timer)
+    }
+
+    // [T1/A1/A2/BUG③] Live non-actor (npc/obstacle) in the initiative slot. There is
+    // no enemy/player branch for it, so the round used to hang here: the player "结束回合"
+    // button is disabled on a non-player turn (canControlPlayerTurn=false) -> the player
+    // side was UNRECOVERABLY deadlocked; only the DM clicking "下一位" escaped. Auto-skip
+    // DM-side; the advance is DM-authored and broadcast via the combat snapshot, so the
+    // player advances too. The dedupe key prevents stacking skip timers across re-renders.
+    if (token.type !== 'player' && token.type !== 'enemy') {
+      // AC4: never spin on an all-npc queue. If no alive player/enemy actor exists at
+      // all, park the round instead of advancing forever (each round mints new keys).
+      const hasActionableActor = initiativeOrder.some((e) => {
+        const t = activeMap.tokens.find((x) => x.id === e.tokenId)
+        return !!t && (t.type === 'player' || t.type === 'enemy') && isTokenAlive(t, chars)
+      })
+      if (!hasActionableActor) return
+      const skipKey = `nonactor-${round}-${initiativeIndex}-${token.id}`
+      if (nonActorSkippedKeysRef.current.has(skipKey)) return
+      nonActorSkippedKeysRef.current.add(skipKey)
       const timer = window.setTimeout(() => requestAdvance(), 50)
       return () => window.clearTimeout(timer)
     }
