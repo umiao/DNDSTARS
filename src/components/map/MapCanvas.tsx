@@ -1892,8 +1892,10 @@ function TokenNode({
     )
   }
 
-  const handleTokenSelect = () => {
+  const handleTokenSelect = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+    e.cancelBubble = true
     if (draggingRef.current || Date.now() < suppressClickUntilRef.current) return
+    suppressClickUntilRef.current = Date.now() + 300
     onSelect()
   }
 
