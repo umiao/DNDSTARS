@@ -25,7 +25,9 @@ import {
   gridStrokeRgba,
   measureSegmentCells,
   measureSnapsToGrid,
+  resolveFreeDropCell,
   resolveTokenDropPosition,
+  shouldSnapTokenOnDrop,
   snapToCellCenter,
   tokenDisplayRadius,
   TOKEN_MOVE_DURATION_S,
@@ -33,6 +35,9 @@ import {
 } from '../../lib/gridCombat'
 
 const TOKEN_MOVE_DURATION = TOKEN_MOVE_DURATION_S
+// [T8/AC5 · D5] 拖拽位移低于该像素阈值视为点击/抖动，不提交移动/广播。
+const TOKEN_DRAG_THRESHOLD_PX = 4
+
 import { useMapStore } from '../../store/maps'
 import type { BattleMap, Token } from '../../store/maps'
 
@@ -833,7 +838,13 @@ export default function MapCanvas({
     return () => ro.disconnect()
   }, [])
 
-  // 首次加载时自适应缩放使整张图可见
+  // [T8/AC6 · D6] 切换地图时重置 fitted 标记，使新地图进入时自适应一次。
+  // 不用 key={map.id} 重挂载（会撕裂 Konva.Animation 实例、拖拽预览、视图/缩放、hover/测距状态）。
+  useEffect(() => {
+    fittedRef.current = false
+  }, [map.id])
+
+  // 首次加载时自适应缩放使整张图可见（每张地图进入时各自适应一次，由上面的 effect 重置 fittedRef）
   useEffect(() => {
     if (!image || fittedRef.current || size.width === 0) return
     const scale = Math.min(size.width / map.width, size.height / map.height) * 0.95
@@ -1215,13 +1226,20 @@ export default function MapCanvas({
               outOfBreathBadge={tokenBadges[t.id]?.outOfBreath}
               huntingMarkStacks={tokenBadges[t.id]?.huntingMarkStacks}
               hoverLabel={hoveredTokenId === t.id ? tokenHoverLabels[t.id] : undefined}
-              onHoverChange={(hovered) => setHoveredTokenId(hovered ? t.id : (id) => (id === t.id ? null : id))}
+              onHoverChange={(hovered) =>
+                // [T8/AC7 · D7] 统一为函数式更新，避免布尔 + 函数式混用导致的悬停闪烁竞态。
+                setHoveredTokenId((id) => (hovered ? t.id : id === t.id ? null : id))
+              }
               onSelect={() => {
                 if (aoeSelectMode || deleteSelectMode) return
                 onSelectToken(t.id)
               }}
               onDragEnd={(x, y) => {
-                const pos = resolveTokenDropPosition(x, y, t, map)
+                const snapped = resolveTokenDropPosition(x, y, t, map)
+                // [T8/AC3 · D3] 吸附格心时拒绝叠放：若目标格被占用，改放到最近空格。
+                const pos = shouldSnapTokenOnDrop(t, map)
+                  ? resolveFreeDropCell(snapped.x, snapped.y, t.id, map)
+                  : snapped
                 updateToken(map.id, t.id, pos)
                 setDragPreviewPositions((prev) => {
                   if (!prev[t.id]) return prev
@@ -1235,6 +1253,15 @@ export default function MapCanvas({
                   ...prev,
                   [t.id]: { x, y },
                 }))
+              }}
+              onDragCancel={() => {
+                // [T8/AC5 · D5] 子阈值拖拽：仅清理预览，不写入/广播。
+                setDragPreviewPositions((prev) => {
+                  if (!prev[t.id]) return prev
+                  const next = { ...prev }
+                  delete next[t.id]
+                  return next
+                })
               }}
             />
             )
@@ -1590,6 +1617,7 @@ function TokenNode({
   onSelect,
   onDragMove,
   onDragEnd,
+  onDragCancel,
   instantPosition = false,
 }: {
   renderMode?: 'full' | 'body' | 'overlay' | 'label' | 'vitals'
@@ -1614,12 +1642,18 @@ function TokenNode({
   onSelect: () => void
   onDragMove?: (x: number, y: number) => void
   onDragEnd: (x: number, y: number) => void
+  /** [T8/AC5] 低于阈值的拖拽（点击/抖动）取消：清理拖拽预览且不提交移动/广播 */
+  onDragCancel?: () => void
   instantPosition?: boolean
 }) {
   const groupRef = useRef<Konva.Group>(null)
   const draggingRef = useRef(false)
   const suppressClickUntilRef = useRef(0)
   const prevGridSizeRef = useRef(gridSize)
+  // [T8/AC5 · D5] 拖拽起点（用于判断是否超过移动阈值）
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null)
+  // [T8/AC8 · D10] 当前在途的位置补间，启动新补间前先销毁它
+  const reconcileTweenRef = useRef<Konva.Tween | null>(null)
   const radius = tokenDisplayRadius(gridSize, token.size, builtinGrid)
   const labelSize = Math.max(9, radius * 0.42)
   const labelBarH = Math.max(14, radius * 0.55)
@@ -1685,16 +1719,27 @@ function TokenNode({
 
     const dist = Math.hypot(node.x() - token.x, node.y() - token.y)
     if (dist < 1) {
+      // [T8/AC8 · D10] 已到位前也先停掉任何在途补间，避免残留动画把节点拉走。
+      reconcileTweenRef.current?.destroy()
+      reconcileTweenRef.current = null
       node.position({ x: token.x, y: token.y })
       return
     }
 
-    node.to({
+    // [T8/AC8 · D10] 启动新补间前，取消/销毁上一个在途补间，杜绝叠加动画。
+    reconcileTweenRef.current?.destroy()
+    const tween = new Konva.Tween({
+      node,
       x: token.x,
       y: token.y,
       duration: TOKEN_MOVE_DURATION,
       easing: Konva.Easings.EaseInOut,
+      onFinish: () => {
+        if (reconcileTweenRef.current === tween) reconcileTweenRef.current = null
+      },
     })
+    reconcileTweenRef.current = tween
+    tween.play()
   }, [token.x, token.y, gridSize, instantPosition])
 
   const nameLayer = (
@@ -1907,8 +1952,9 @@ function TokenNode({
       onTap={handleTokenSelect}
       onMouseEnter={() => onHoverChange?.(true)}
       onMouseLeave={() => onHoverChange?.(false)}
-      onDragStart={() => {
+      onDragStart={(e) => {
         draggingRef.current = true
+        dragStartRef.current = { x: e.target.x(), y: e.target.y() }
       }}
       onDragMove={(e) => {
         onDragMove?.(e.target.x(), e.target.y())
@@ -1916,7 +1962,17 @@ function TokenNode({
       onDragEnd={(e) => {
         suppressClickUntilRef.current = Date.now() + 250
         draggingRef.current = false
-        onDragEnd(e.target.x(), e.target.y())
+        const x = e.target.x()
+        const y = e.target.y()
+        const start = dragStartRef.current
+        dragStartRef.current = null
+        // [T8/AC5 · D5] 位移小于阈值（点击/抖动）：不提交移动/广播，回弹到原位并清理预览。
+        if (start && Math.hypot(x - start.x, y - start.y) < TOKEN_DRAG_THRESHOLD_PX) {
+          e.target.position({ x: token.x, y: token.y })
+          onDragCancel?.()
+          return
+        }
+        onDragEnd(x, y)
       }}
     >
       {selected && (

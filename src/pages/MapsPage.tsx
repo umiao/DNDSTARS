@@ -109,6 +109,7 @@ import {
   isWithinMovementRange,
   cellDistance,
   movementRadiusPx,
+  occupiedCells,
   pixelToCell,
   snapToCellCenter,
   TOKEN_MOVE_DURATION_S,
@@ -1047,6 +1048,8 @@ export default function MapsPage() {
       ? `删除选框内 ${tokenIds.length} 个障碍物？`
       : `删除选框内 ${tokenIds.length} 个单位/障碍物？`
     if (window.confirm(label)) {
+      // [T8/AC1 · D1] 选框删除若命中当前选中 token，立即清空选中态（守卫 effect 之外的显式清理）。
+      if (selectedTokenId && tokenIds.includes(selectedTokenId)) setSelectedTokenId(null)
       tokenIds.forEach((tokenId) => removeToken(activeMap.id, tokenId))
     }
     setDeleteSelectMode(false)
@@ -1326,6 +1329,12 @@ export default function MapsPage() {
     if (combatActive && initiativeOrder.length === 0) return
     publishCombatState()
   }, [activeMap?.id, combatActive, round, initiativeIndex, initiativeOrder, enemyApByToken])
+
+  // [T8/AC2 · D2] 任何地图切换都清空选中态：不仅 DM 下拉，也覆盖程序化 select()、
+  // 远端/玩家跟随、removeMap 自动重选。监听 activeMap?.id 即可统一处理所有路径。
+  useEffect(() => {
+    setSelectedTokenId(null)
+  }, [activeMap?.id])
 
   const chooseMode = (next: Mode) => {
     if (forcedMode && next !== forcedMode) return
@@ -1691,6 +1700,17 @@ export default function MapsPage() {
       .map((t) => t.id)
   }, [activeMap?.tokens, characterHpKey, tokenHpKey, characters])
 
+  // [T8/AC1 · D1] 选中的 token 被删除（选框删除 / 面板删除）或阵亡（HP→0 / defeated）后，
+  // 不应继续渲染虚线选中环。统一守卫：选中 id 不再存在于当前地图，或已进入 defeated 集合时清空。
+  // 与既有 6 处 setSelectedTokenId(null) 互补（additive，不替换）。
+  useEffect(() => {
+    if (!selectedTokenId) return
+    const stillPresent = activeMap?.tokens.some((t) => t.id === selectedTokenId)
+    if (!stillPresent || defeatedTokenIds.includes(selectedTokenId)) {
+      setSelectedTokenId(null)
+    }
+  }, [selectedTokenId, activeMap?.tokens, defeatedTokenIds])
+
   const aoeCasterCell = useMemo((): GridCell | null => {
     if (!activeMap || !targeting) return null
     const casterToken = activeMap.tokens.find((t) => t.characterId === targeting.casterId)
@@ -1834,6 +1854,53 @@ export default function MapsPage() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [targeting])
+
+  // [T8/AC9 · D13] 选中 token 的键盘操作：方向键移动一格、Delete/Backspace 删除。
+  // 仅 DM；在 input/textarea/contentEditable 中输入时不触发；不引入玩家端权威写入（沿用既有 DM 路径）。
+  useEffect(() => {
+    if (!isDM || !activeMap || !selectedToken) return
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return
+      // 拖动/测距/网格调整等模式下不接管键盘
+      if (deleteSelectMode || measureMode || gridAdjustMode || targeting || showMoveRange) return
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault()
+        setSelectedTokenId(null)
+        removeToken(activeMap.id, selectedToken.id)
+        return
+      }
+
+      const deltas: Record<string, [number, number]> = {
+        ArrowUp: [0, -1],
+        ArrowDown: [0, 1],
+        ArrowLeft: [-1, 0],
+        ArrowRight: [1, 0],
+      }
+      const delta = deltas[e.key]
+      if (!delta) return
+      e.preventDefault()
+      const from = pixelToCell(selectedToken.x, selectedToken.y, activeMap)
+      const to: GridCell = { col: from.col + delta[0], row: from.row + delta[1] }
+      // 目标格被其它 token 占用则不移动（与拖放占格规则一致）
+      const blocked = occupiedCells(activeMap.tokens, activeMap, selectedToken.id)
+      if (blocked.has(cellKey(to))) return
+      updateToken(activeMap.id, selectedToken.id, cellToPixel(to, activeMap))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [
+    isDM,
+    activeMap,
+    selectedToken,
+    deleteSelectMode,
+    measureMode,
+    gridAdjustMode,
+    targeting,
+    showMoveRange,
+  ])
 
   const tokenBadges = useMemo(() => {
     const badges: Record<
