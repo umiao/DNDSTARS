@@ -60,6 +60,7 @@ export interface SharedPlayerActionState {
   actorTokenId: string
   characterId: string
   targetTokenId?: string
+  targetTokenIds?: string[]
   targetCell?: GridCell
   targetPosition?: { x: number; y: number }
   aoeRectRotation?: number

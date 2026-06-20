@@ -1317,7 +1317,7 @@ export default function MapCanvas({
                 setHoveredTokenId((id) => (hovered ? t.id : id === t.id ? null : id))
               }
               onSelect={() => {
-                if (aoeSelectMode || deleteSelectMode) return
+                if (deleteSelectMode) return
                 onSelectToken(t.id)
               }}
               onDragEnd={(x, y) => {
@@ -2023,8 +2023,10 @@ function TokenNode({
     )
   }
 
-  const handleTokenSelect = () => {
+  const handleTokenSelect = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+    e.cancelBubble = true
     if (draggingRef.current || Date.now() < suppressClickUntilRef.current) return
+    suppressClickUntilRef.current = Date.now() + 300
     onSelect()
   }
 

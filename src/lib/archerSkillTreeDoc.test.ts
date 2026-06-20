@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Character } from '../types/character'
 import {
   ARCHER_SKILL_TREE,
+  buildSkillTierDescription,
   canUpgradeSkillRank,
   getArcherSkillDef,
   skillRankCapForCharacterLevel,
@@ -99,5 +100,32 @@ describe('archer document skill tree config', () => {
   it('blocks upgrades above the document rank cap', () => {
     expect(canUpgradeSkillRank(character(19, { focusShot: 1, clusterShot: 1 }), 'focusShot')).toBe(false)
     expect(canUpgradeSkillRank(character(20, { focusShot: 1, clusterShot: 1 }), 'focusShot')).toBe(true)
+  })
+
+  it('formats burst kick stun only from rank 3', () => {
+    const def = getArcherSkillDef('burstKick')!
+
+    expect(buildSkillTierDescription(def, 1)).toContain('范围：5 尺')
+    expect(buildSkillTierDescription(def, 1)).toContain('目标：单体')
+    expect(buildSkillTierDescription(def, 1)).toContain('伤害：2D4 点钝击伤害')
+    expect(buildSkillTierDescription(def, 1)).not.toContain('眩晕')
+    expect(buildSkillTierDescription(def, 1)).not.toContain('体质豁免')
+
+    expect(buildSkillTierDescription(def, 2)).toContain('伤害：3D4 点钝击伤害')
+    expect(buildSkillTierDescription(def, 2)).not.toContain('眩晕')
+
+    expect(buildSkillTierDescription(def, 3)).toContain('豁免：体质豁免')
+    expect(buildSkillTierDescription(def, 3)).toContain('效果：失败眩晕 1 回合')
+  })
+
+  it('formats wind kick combo in the audit-friendly skill layout', () => {
+    const def = getArcherSkillDef('windKickCombo')!
+    const text = buildSkillTierDescription(def, 1)
+
+    expect(text).toContain('范围：移动 15 尺，终点 5 尺内')
+    expect(text).toContain('目标：单体')
+    expect(text).toContain('伤害：3D4 点钝击伤害')
+    expect(text).toContain('目标处于击飞状态时额外造成 1D6 点钝击伤害')
+    expect(def.tiers.every((tier) => (tier.damageBonus ?? 0) === 0)).toBe(true)
   })
 })
