@@ -1,4 +1,11 @@
 ﻿import { enemyHasDerivedCombat, getEnemyMaxHp } from './enemyCombatStats'
+import {
+  creatureSizeToTokenSize,
+  inferCreatureSizeFromTags,
+  inferCreatureTypesFromTags,
+  type CreatureSize,
+  type CreatureType,
+} from './monsterTypes'
 
 /** 怪物池模板（用于 DM 快速放置敌人 token） */
 export interface EnemyTemplate {
@@ -10,6 +17,8 @@ export interface EnemyTemplate {
   /** 默认等于 maxHp */
   hp?: number
   size?: number
+  creatureTypes?: CreatureType[]
+  creatureSize?: CreatureSize
   tags: string[]
   description?: string
 }
@@ -208,8 +217,9 @@ export const ENEMY_POOL: EnemyTemplate[] = [
     emoji: '🐉',
     color: '#dc2626',
     maxHp: 52,
-    size: 1.5,
-    tags: ['龙类', '中型', '火焰'],
+    creatureTypes: ['龙'],
+    creatureSize: '大型',
+    tags: ['龙类', '大型', '火焰'],
     description: '年幼的红龙，第一回合会优先使用火焰吐息。',
   },
   {
@@ -218,8 +228,9 @@ export const ENEMY_POOL: EnemyTemplate[] = [
     emoji: '🐉',
     color: '#22c55e',
     maxHp: 48,
-    size: 1.5,
-    tags: ['龙类', '中型', '毒素'],
+    creatureTypes: ['龙'],
+    creatureSize: '大型',
+    tags: ['龙类', '大型', '毒素'],
     description: '狡猾的年轻绿龙。',
   },
   {
@@ -263,6 +274,8 @@ export function searchEnemyPool(query: string, pool: EnemyTemplate[] = ENEMY_POO
     (e) =>
       e.name.toLowerCase().includes(q) ||
       e.tags.some((t) => t.toLowerCase().includes(q)) ||
+      e.creatureTypes?.some((t) => t.toLowerCase().includes(q)) ||
+      e.creatureSize?.toLowerCase().includes(q) ||
       e.description?.toLowerCase().includes(q),
   )
 }
@@ -272,14 +285,18 @@ export function enemyTemplateToTokenPatch(template: EnemyTemplate): Partial<Toke
     ? getEnemyMaxHp(template.id)
     : template.maxHp
   const hp = template.hp ?? maxHp
+  const creatureTypes = template.creatureTypes ?? inferCreatureTypesFromTags(template.tags)
+  const creatureSize = template.creatureSize ?? inferCreatureSizeFromTags(template.tags)
   return {
     label: template.name,
     emoji: template.emoji,
     color: template.color,
     maxHp,
     hp,
-    size: template.size,
+    size: creatureSizeToTokenSize(creatureSize),
     poolId: template.id,
+    creatureTypes,
+    creatureSize,
     type: 'enemy' as const,
     showHpOnToken: true,
     showDetailOnToken: true,
@@ -295,7 +312,10 @@ export interface TokenFields {
   hp?: number
   size?: number
   poolId?: string
+  creatureTypes?: CreatureType[]
+  creatureSize?: CreatureSize
   type: 'enemy'
   showHpOnToken?: boolean
   showDetailOnToken?: boolean
 }
+

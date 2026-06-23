@@ -9,6 +9,15 @@ import {
   getEnemyDerivedCombatStats,
   getEnemyEquipmentSlots,
 } from '../../lib/enemyCombatStats'
+import {
+  CREATURE_SIZES,
+  CREATURE_TYPES,
+  creatureSizeToTokenSize,
+  inferCreatureSizeFromTags,
+  inferCreatureTypesFromTags,
+  type CreatureSize,
+  type CreatureType,
+} from '../../lib/monsterTypes'
 import { X, Shield, Footprints, Sparkles, Swords, Backpack } from 'lucide-react'
 
 function resolveEnemyDetail(token: Token): {
@@ -49,7 +58,16 @@ export default function EnemyDetailPanel({
   const name = token.label || template?.name || '敌人'
   const emoji = token.emoji || template?.emoji || '👹'
   const color = token.color || template?.color || '#f87171'
-  const tags = template?.tags ?? []
+  const templateTags = template?.tags ?? []
+  const creatureTypes = token.creatureTypes?.length
+    ? token.creatureTypes
+    : template?.creatureTypes ?? inferCreatureTypesFromTags(templateTags)
+  const creatureSize = token.creatureSize ?? template?.creatureSize ?? inferCreatureSizeFromTags(templateTags)
+  const tags = [
+    ...creatureTypes,
+    creatureSize,
+    ...templateTags.filter((tag) => !creatureTypes.includes(tag as CreatureType) && tag !== creatureSize),
+  ]
   const description = template?.description
   const linked = token.characterId ? characters.find((c) => c.id === token.characterId) : undefined
   const canEdit = isDM && !!mapId && !!updateToken
@@ -104,16 +122,49 @@ export default function EnemyDetailPanel({
                 onChange={(e) => updateToken!(mapId!, token.id, { label: e.target.value })}
                 className="rounded-lg border border-white/10 bg-void-950/70 px-2 py-1 text-xs text-slate-100 outline-none focus:border-arcane-500"
               />
-              <span className="text-xs text-slate-500">大小</span>
-              <input
-                type="range"
-                min={0.5}
-                max={3}
-                step={0.25}
-                value={token.size ?? 1}
-                onChange={(e) => updateToken!(mapId!, token.id, { size: Number(e.target.value) })}
-                className="accent-arcane-500"
-              />
+              <span className="text-xs text-slate-500">体型</span>
+              <select
+                value={creatureSize}
+                onChange={(e) => {
+                  const next = e.target.value as CreatureSize
+                  updateToken!(mapId!, token.id, {
+                    creatureSize: next,
+                    size: creatureSizeToTokenSize(next),
+                  })
+                }}
+                className="rounded-lg border border-white/10 bg-void-950/70 px-2 py-1 text-xs text-slate-100 outline-none focus:border-arcane-500"
+              >
+                {CREATURE_SIZES.map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-slate-500">种类</span>
+              <div className="flex flex-wrap gap-1">
+                {CREATURE_TYPES.map((type) => {
+                  const checked = creatureTypes.includes(type)
+                  return (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => {
+                        const next = checked
+                          ? creatureTypes.filter((item) => item !== type)
+                          : [...creatureTypes, type]
+                        updateToken!(mapId!, token.id, { creatureTypes: next })
+                      }}
+                      className={`rounded px-1.5 py-0.5 text-[10px] ${
+                        checked
+                          ? 'bg-arcane-500/30 text-arcane-100'
+                          : 'bg-white/5 text-slate-500 hover:bg-white/10 hover:text-slate-300'
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  )
+                })}
+              </div>
               <span className="text-xs text-slate-500">HP</span>
               <div className="flex items-center gap-1">
                 <input

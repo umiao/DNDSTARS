@@ -1,5 +1,17 @@
 $ErrorActionPreference = 'Stop'
 
+try {
+  $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+  [Console]::InputEncoding = $utf8NoBom
+  [Console]::OutputEncoding = $utf8NoBom
+  $OutputEncoding = $utf8NoBom
+  chcp.com 65001 > $null
+  $env:PYTHONUTF8 = '1'
+  $env:PYTHONIOENCODING = 'utf-8'
+} catch {
+  Write-Warning "Failed to switch this PowerShell session to UTF-8: $($_.Exception.Message)"
+}
+
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $node = 'D:\study\Nodejs\node.exe'
 if (-not (Test-Path -LiteralPath $node)) {

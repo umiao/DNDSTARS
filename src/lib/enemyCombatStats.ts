@@ -28,7 +28,7 @@ export function enemyHasDerivedCombat(poolId?: string): boolean {
 
 export function enemyCombatInput(poolId: string): CombatStatInput | undefined {
   const block = getEnemyStatBlock(poolId)
-  if (!block?.equipment || !hasAnyEquipment(block.equipment)) return undefined
+  if (!block) return undefined
   return {
     abilities: block.abilities,
     equipment: block.equipment,
@@ -54,7 +54,7 @@ export function getEnemyMaxHp(poolId: string, fallback = 12): number {
 }
 
 export function getTokenTargetAc(token: Token): number | undefined {
-  if (token.poolId && enemyHasDerivedCombat(token.poolId)) {
+  if (token.poolId && getEnemyStatBlock(token.poolId)) {
     return getEnemyAc(token.poolId)
   }
   return undefined

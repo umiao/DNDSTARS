@@ -6,6 +6,8 @@ import {
   formatFeatureDescription,
   getClassFeatureDef,
   isArcherLineFeatureKey,
+  maxQiForLevel,
+  syncQiForCharacter,
   TRAIT_CHOICE_GROUPS,
   type ClassFeatureKey,
 } from './traitRegistry'
@@ -113,5 +115,12 @@ describe('archer document feature config', () => {
     expect(getClassFeatureDef('swiftShot')?.name).toBe('波澜不惊')
     expect(getClassFeatureDef('swiftShot')?.description).toContain('切换静心/气喘状态')
     expect(getClassFeatureDef('finale')?.description).toContain('消耗 2 AP')
+  })
+
+  it('preserves current shadow dancer qi while syncing derived character data', () => {
+    expect(maxQiForLevel(30)).toBe(99)
+    expect(syncQiForCharacter({ charClass: '\u5f71\u821e\u8005', level: 30, qi: 98 } as any).qi).toBe(98)
+    expect(syncQiForCharacter({ charClass: '\u5f71\u821e\u8005', level: 30 } as any).qi).toBe(99)
+    expect(syncQiForCharacter({ charClass: '\u5f71\u821e\u8005', level: 30, qi: 120 } as any).qi).toBe(99)
   })
 })

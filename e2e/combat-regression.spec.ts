@@ -394,6 +394,227 @@ test('player movement is accepted by DM authority and updates authoritative map 
   await context.close()
 })
 
+test('player multi-shot rolls once and applies damage through DM authority', async ({ browser, request }) => {
+  const mapId = `e2e-multishot-${Date.now()}`
+  const multiShot = {
+    id: 'multi-shot-regression',
+    name: '多重射击',
+    emoji: '🏹',
+    description: 'E2E 多重射击',
+    apCost: 1,
+    cooldown: 0,
+    cdReduction: 0,
+    remaining: 0,
+    usedThisTurn: false,
+    damageCount: 1,
+    damageSides: 4,
+    damageBonus: 0,
+    arrowShots: 2,
+    tags: ['ranged'],
+    skillTreeId: 'multiShot',
+  }
+  await seedEncounter(request, mapId, {
+    playerFirst: true,
+    enemyApByToken: {
+      'goblin-regression': { current: 0, max: 2 },
+      'red-dragon-regression': { current: 0, max: 2 },
+    },
+    heroPatch: {
+      combatSkills: [multiShot],
+      currentAP: 2,
+    },
+  })
+
+  const context = await browser.newContext()
+  const dm = await context.newPage()
+  const player = await context.newPage()
+  await Promise.all([
+    dm.goto(`${DM}/maps`, { waitUntil: 'domcontentloaded' }),
+    player.goto(`${PLAYER}/maps`, { waitUntil: 'domcontentloaded' }),
+  ])
+
+  const now = Date.now()
+  const action = {
+    id: `${mapId}:player-action:${now}:multi-shot`,
+    mapId,
+    combatId: `${mapId}:combat`,
+    sourceMode: 'player',
+    status: 'pending',
+    type: 'attack-token',
+    actorTokenId: 'player-regression',
+    characterId: 'hero-regression',
+    skillId: 'multi-shot-regression',
+    targetTokenId: 'goblin-regression',
+    targetTokenIds: ['goblin-regression', 'goblin-regression'],
+    round: 1,
+    initiativeIndex: 0,
+    seq: 1,
+    updatedAt: now,
+  }
+  await putState(request, 'player-action', action)
+  await postEvent(request, 'player-action-player-to-dm', action)
+
+  await expect
+    .poll(
+      async () => {
+        const ack = await getState<{ actionId?: string; status?: string }>(request, 'player-action-ack')
+        return ack.actionId === action.id ? ack.status : ''
+      },
+      { timeout: 45_000 },
+    )
+    .toBe('accepted')
+
+  await expect
+    .poll(
+      async () => {
+        const characters = await getState<{ characters: Array<{ id: string; currentAP: number }> }>(
+          request,
+          'characters',
+        )
+        return characters.characters.find((item) => item.id === 'hero-regression')?.currentAP
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(1)
+
+  await expect
+    .poll(
+      async () => {
+        const maps = await getState<{ maps: Array<{ id: string; tokens: Array<{ id: string; hp?: number }> }> }>(
+          request,
+          'maps',
+        )
+        return maps.maps.find((item) => item.id === mapId)?.tokens.find((item) => item.id === 'goblin-regression')?.hp
+      },
+      { timeout: 20_000 },
+    )
+    .toBeLessThanOrEqual(12)
+
+  await context.close()
+})
+
+test('illusion dance resolves selected targets in initiative order and pulls failed saves closer', async ({ browser, request }) => {
+  const mapId = `e2e-illusion-dance-${Date.now()}`
+  await seedEncounter(request, mapId, {
+    playerFirst: true,
+    heroPatch: {
+      charClass: '影舞者',
+      currentAP: 2,
+      qi: 2,
+      saveDC: 99,
+    },
+    heroTraits: [
+      {
+        id: 'illusion-dance-regression',
+        name: '迷幻舞步',
+        level: 2,
+        uses: 1,
+        maxUses: 1,
+        description: 'E2E 迷幻舞步',
+        featureKey: 'illusionDance',
+      },
+    ],
+    tokenOverrides: {
+      'red-dragon-regression': { ...center(10, 6) },
+    },
+  })
+
+  const context = await browser.newContext()
+  const dm = await context.newPage()
+  const player = await context.newPage()
+  await Promise.all([
+    dm.goto(`${DM}/maps`, { waitUntil: 'domcontentloaded' }),
+    player.goto(`${PLAYER}/maps`, { waitUntil: 'domcontentloaded' }),
+  ])
+
+  const now = Date.now()
+  const action = {
+    id: `${mapId}:player-action:${now}:illusion-dance`,
+    mapId,
+    combatId: `${mapId}:combat`,
+    sourceMode: 'player',
+    status: 'pending',
+    type: 'activate-feature',
+    actorTokenId: 'player-regression',
+    characterId: 'hero-regression',
+    featureKey: 'illusionDance',
+    targetTokenId: 'red-dragon-regression',
+    targetTokenIds: ['red-dragon-regression', 'goblin-regression'],
+    round: 1,
+    initiativeIndex: 0,
+    seq: 1,
+    updatedAt: now,
+  }
+  await putState(request, 'player-action', action)
+  await postEvent(request, 'player-action-player-to-dm', action)
+
+  await expect
+    .poll(
+      async () => {
+        const ack = await getState<{ actionId?: string; status?: string }>(request, 'player-action-ack')
+        return ack.actionId === action.id ? ack.status : ''
+      },
+      { timeout: 45_000 },
+    )
+    .toBe('accepted')
+
+  await expect
+    .poll(
+      async () => {
+        const characters = await getState<{
+          characters: Array<{
+            id: string
+            currentAP: number
+            qi?: number
+            traits: Array<{ featureKey?: string; uses: number }>
+          }>
+        }>(request, 'characters')
+        const hero = characters.characters.find((item) => item.id === 'hero-regression')
+        return {
+          ap: hero?.currentAP,
+          qi: hero?.qi,
+          uses: hero?.traits.find((trait) => trait.featureKey === 'illusionDance')?.uses,
+        }
+      },
+      { timeout: 20_000 },
+    )
+    .toEqual({ ap: 1, qi: 98, uses: 0 })
+
+  await expect
+    .poll(
+      async () => {
+        const maps = await getState<{ maps: Array<{ id: string; tokens: Array<{ id: string; x: number; y: number; noMoveTurns?: number }> }> }>(
+          request,
+          'maps',
+        )
+        const map = maps.maps.find((item) => item.id === mapId)
+        const goblin = map?.tokens.find((item) => item.id === 'goblin-regression')
+        const redDragon = map?.tokens.find((item) => item.id === 'red-dragon-regression')
+        return {
+          goblin: goblin ? { col: Math.round(goblin.x / 70 - 0.5), row: Math.round(goblin.y / 70 - 0.5), lock: goblin.noMoveTurns } : null,
+          redDragon: redDragon ? { col: Math.round(redDragon.x / 70 - 0.5), row: Math.round(redDragon.y / 70 - 0.5), lock: redDragon.noMoveTurns } : null,
+        }
+      },
+      { timeout: 20_000 },
+    )
+    .toEqual({
+      goblin: { col: 8, row: 1, lock: 1 },
+      redDragon: { col: 10, row: 3, lock: 1 },
+    })
+
+  await expect
+    .poll(
+      async () => {
+        const log = await getState<{ entries: Array<{ text: string }> }>(request, 'combat-log')
+        return log.entries.find((entry) => entry.text.includes('迷幻舞步'))?.text ?? ''
+      },
+      { timeout: 20_000 },
+    )
+    .toMatch(/E2E Goblin.*E2E Red Dragon Wyrmling/)
+
+  await context.close()
+})
+
 test('precise strike forces crit and armor piercing hits aligned targets', async ({ browser, request }) => {
   const mapId = `e2e-precise-pierce-${Date.now()}`
   await seedEncounter(request, mapId, {

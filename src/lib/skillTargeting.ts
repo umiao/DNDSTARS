@@ -5,7 +5,7 @@ import {
   cellKey,
   DND_FEET_PER_CELL,
   feetToMovementCells,
-  pixelToCell,
+  tokenOccupiedCellsAt,
   type GridCell,
 } from './gridCombat'
 
@@ -300,22 +300,24 @@ export function canPlaceCircleCenter(
 
 export function tokensInCells(map: BattleMap, tokens: Token[], cells: GridCell[]): Token[] {
   const set = new Set(cells.map(cellKey))
-  return tokens.filter((t) => set.has(cellKey(pixelToCell(t.x, t.y, map))))
+  return tokens.filter((token) =>
+    tokenOccupiedCellsAt(token, map, token).some((cell) => set.has(cellKey(cell))),
+  )
 }
 
 export function formatAoeHint(_skill: CombatSkill, aoe: SkillAoeTargeting): string {
   switch (aoe.shape) {
     case 'circle': {
-      const r = `${aoe.radiusFeet} 尺`
-      if (aoe.origin === 'self') return `以自身为圆心，${r} 圆形范围`
-      const place = aoe.placeRangeFeet != null ? `在 ${aoe.placeRangeFeet} 尺内` : '在地图上'
-      return `${place}选择圆心，${r} 圆形范围`
+      const r = `${aoe.radiusFeet} \u5c3a`
+      if (aoe.origin === 'self') return `\u4ee5\u81ea\u8eab\u4e3a\u5706\u5fc3\uff0c${r} \u5706\u5f62\u8303\u56f4`
+      const place = aoe.placeRangeFeet != null ? `\u5728 ${aoe.placeRangeFeet} \u5c3a\u5185` : '\u5728\u5730\u56fe\u4e0a'
+      return `${place}\u9009\u62e9\u5706\u5fc3\uff0c${r} \u5706\u5f62\u8303\u56f4`
     }
     case 'line':
-      return `从角色沿瞄准方向，${aoe.widthFeet}×${aoe.lengthFeet} 尺直线路径`
+      return `\u4ece\u89d2\u8272\u6cbf\u7784\u51c6\u65b9\u5411\uff0c${aoe.widthFeet}\u00d7${aoe.lengthFeet} \u5c3a\u76f4\u7ebf\u8def\u5f84`
     case 'rect': {
-      const place = aoe.placeRangeFeet != null ? `在 ${aoe.placeRangeFeet} 尺内` : '在地图上'
-      return `${place}选择矩形中心，${aoe.widthFeet}×${aoe.heightFeet} 尺区域`
+      const place = aoe.placeRangeFeet != null ? `\u5728 ${aoe.placeRangeFeet} \u5c3a\u5185` : '\u5728\u5730\u56fe\u4e0a'
+      return `${place}\u9009\u62e9\u77e9\u5f62\u4e2d\u5fc3\uff0c${aoe.widthFeet}\u00d7${aoe.heightFeet} \u5c3a\u533a\u57df`
     }
   }
 }
@@ -332,11 +334,11 @@ export function aoeUsesMouseAim(aoe: SkillAoeTargeting): boolean {
 }
 
 export function aoeConfirmHint(aoe: SkillAoeTargeting, valid: boolean): string {
-  if (isSelfOriginCircleAoe(aoe)) return ' · 点击自身确认释放'
+  if (isSelfOriginCircleAoe(aoe)) return ' \u00b7 \u70b9\u51fb\u81ea\u8eab\u786e\u8ba4\u91ca\u653e'
   if (!valid) {
-    if (aoe.shape === 'line') return ' · 瞄准点超出距离'
-    if (aoe.shape === 'rect') return ' · 矩形中心超出距离'
-    return ' · 圆心超出距离'
+    if (aoe.shape === 'line') return ' \u00b7 \u7784\u51c6\u70b9\u8d85\u51fa\u8ddd\u79bb'
+    if (aoe.shape === 'rect') return ' \u00b7 \u77e9\u5f62\u4e2d\u5fc3\u8d85\u51fa\u8ddd\u79bb'
+    return ' \u00b7 \u5706\u5fc3\u8d85\u51fa\u8ddd\u79bb'
   }
-  return ' · 移动鼠标预览，点击确认'
+  return ' \u00b7 \u79fb\u52a8\u9f20\u6807\u9884\u89c8\uff0c\u70b9\u51fb\u786e\u8ba4'
 }

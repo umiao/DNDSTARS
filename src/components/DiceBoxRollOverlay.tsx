@@ -45,6 +45,7 @@ export default function DiceBoxRollOverlay({
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const readyRef = useRef(false)
   const completedRef = useRef(false)
+  const sentRequestRef = useRef<string | null>(null)
   const onCompleteRef = useRef(onComplete)
   const [flyX, flyY] = useMemo(() => resolveFlyOffset(requestId, flyIndex), [flyIndex, requestId])
 
@@ -84,6 +85,8 @@ export default function DiceBoxRollOverlay({
       }, delay)
     }
     const sendRoll = () => {
+      if (sentRequestRef.current === requestId) return
+      sentRequestRef.current = requestId
       log('send-roll')
       iframeRef.current?.contentWindow?.postMessage(
         {
@@ -119,6 +122,7 @@ export default function DiceBoxRollOverlay({
     }, 900)
     const fallback = window.setTimeout(() => finish(forcedValues), 22000)
     return () => {
+      if (!completedRef.current && sentRequestRef.current === requestId) sentRequestRef.current = null
       if (iframeRef.current) iframeRef.current.src = 'about:blank'
       window.clearTimeout(retry)
       window.clearTimeout(fallback)

@@ -1,4 +1,5 @@
 import type { BattleMap, Token } from '../store/maps'
+import { creatureSizeToFootprintCells, sizeFromTokenSize } from './monsterTypes'
 
 /** DND：1 格 = 5 尺（格宽仅决定屏幕上每格像素） */
 export const DND_FEET_PER_CELL = 5
@@ -132,7 +133,7 @@ export function resolveTokenDropPosition(
   map: BattleMap,
 ): { x: number; y: number } {
   if (!shouldSnapTokenOnDrop(token, map)) return { x, y }
-  return snapToCellCenter(x, y, map)
+  return snapTokenToGridCenter(x, y, token, map)
 }
 
 export function isWithinMovementRange(
@@ -147,6 +148,94 @@ export function isWithinMovementRange(
 
 export function snapToCellCenter(x: number, y: number, map: BattleMap): { x: number; y: number } {
   return cellToPixel(pixelToCell(x, y, map), map)
+}
+
+export function tokenFootprintCells(token: Pick<Token, 'creatureSize' | 'size'>): number {
+  return creatureSizeToFootprintCells(token.creatureSize ?? sizeFromTokenSize(token.size))
+}
+
+export function tokenAnchorCellFromPixel(
+  x: number,
+  y: number,
+  token: Pick<Token, 'creatureSize' | 'size'>,
+  map: BattleMap,
+): GridCell {
+  const g = Math.max(1, map.gridSize)
+  const footprint = tokenFootprintCells(token)
+  return {
+    col: Math.round((x - map.gridOffsetX) / g - footprint / 2),
+    row: Math.round((y - map.gridOffsetY) / g - footprint / 2),
+  }
+}
+
+export function tokenCenterForAnchorCell(
+  anchor: GridCell,
+  token: Pick<Token, 'creatureSize' | 'size'>,
+  map: BattleMap,
+): { x: number; y: number } {
+  const g = Math.max(1, map.gridSize)
+  const footprint = tokenFootprintCells(token)
+  return {
+    x: map.gridOffsetX + (anchor.col + footprint / 2) * g,
+    y: map.gridOffsetY + (anchor.row + footprint / 2) * g,
+  }
+}
+
+export function snapTokenToGridCenter(
+  x: number,
+  y: number,
+  token: Pick<Token, 'creatureSize' | 'size'>,
+  map: BattleMap,
+): { x: number; y: number } {
+  return tokenCenterForAnchorCell(tokenAnchorCellFromPixel(x, y, token, map), token, map)
+}
+
+function mapCellExtent(map: BattleMap): { cols: number; rows: number } {
+  const g = Math.max(1, map.gridSize)
+  return {
+    cols: Math.max(1, Math.floor((map.width - map.gridOffsetX) / g)),
+    rows: Math.max(1, Math.floor((map.height - map.gridOffsetY) / g)),
+  }
+}
+
+function tokenFootprintCellsForAnchor(
+  token: Pick<Token, 'creatureSize' | 'size'>,
+  anchor: GridCell,
+): GridCell[] {
+  const footprint = tokenFootprintCells(token)
+  const cells: GridCell[] = []
+  for (let dc = 0; dc < footprint; dc++) {
+    for (let dr = 0; dr < footprint; dr++) {
+      cells.push({ col: anchor.col + dc, row: anchor.row + dr })
+    }
+  }
+  return cells
+}
+
+export function tokenOccupiedCellsAt(
+  token: Pick<Token, 'creatureSize' | 'size'>,
+  map: BattleMap,
+  pos: { x: number; y: number },
+): GridCell[] {
+  return tokenFootprintCellsForAnchor(token, tokenAnchorCellFromPixel(pos.x, pos.y, token, map))
+}
+
+function isFootprintInsideMap(token: Pick<Token, 'creatureSize' | 'size'>, anchor: GridCell, map: BattleMap): boolean {
+  const footprint = tokenFootprintCells(token)
+  const { cols, rows } = mapCellExtent(map)
+  return anchor.col >= 0 && anchor.row >= 0 && anchor.col + footprint <= cols && anchor.row + footprint <= rows
+}
+
+export function tokenFootprintDistanceCells(a: Token, b: Token, map: BattleMap): number {
+  const aCells = tokenOccupiedCellsAt(a, map, a)
+  const bCells = tokenOccupiedCellsAt(b, map, b)
+  let best = Number.POSITIVE_INFINITY
+  for (const ac of aCells) {
+    for (const bc of bCells) {
+      best = Math.min(best, cellDistance(ac, bc))
+    }
+  }
+  return Number.isFinite(best) ? best : cellDistance(pixelToCell(a.x, a.y, map), pixelToCell(b.x, b.y, map))
 }
 
 /** 地图上 token 的显示半径（随格宽缩放；底图网格时更贴合格心） */
@@ -174,7 +263,7 @@ export function tokenSizeFromRadius(
   return (r * 2 + g * 0.06) / g
 }
 
-export function clampTokenSize(size: number, min = 0.5, max = 3): number {
+export function clampTokenSize(size: number, min = 0.5, max = 4): number {
   return Math.round(Math.min(max, Math.max(min, size)) * 4) / 4
 }
 
@@ -198,7 +287,7 @@ export function defaultTokenSizeForMap(_map: BattleMap): number {
 
 export function realignTokensToGrid(tokens: Token[], map: BattleMap): Token[] {
   return tokens.map((t) => {
-    const pos = snapToCellCenter(t.x, t.y, map)
+    const pos = snapTokenToGridCenter(t.x, t.y, t, map)
     return { ...t, ...pos }
   })
 }
@@ -212,6 +301,14 @@ export function getReachableCells(
   movingTokenId: string,
 ): GridCell[] {
   const blocked = occupiedCells(tokens, map, movingTokenId)
+  const movingToken = tokens.find((t) => t.id === movingTokenId)
+  const canOccupy = (cell: GridCell) => {
+    if (!movingToken) return !blocked.has(cellKey(cell))
+    return (
+      isFootprintInsideMap(movingToken, cell, map) &&
+      tokenFootprintCellsForAnchor(movingToken, cell).every((occupied) => !blocked.has(cellKey(occupied)))
+    )
+  }
   const visited = new Map<string, number>()
   const queue: { cell: GridCell; dist: number }[] = [{ cell: start, dist: 0 }]
   const reachable: GridCell[] = []
@@ -225,7 +322,7 @@ export function getReachableCells(
     for (const [dc, dr] of NEIGHBOR_DIRS) {
       const next = { col: cell.col + dc, row: cell.row + dr }
       const key = cellKey(next)
-      if (blocked.has(key)) continue
+      if (!canOccupy(next)) continue
       const nd = dist + 1
       const prev = visited.get(key)
       if (prev != null && prev <= nd) continue
@@ -240,7 +337,9 @@ export function occupiedCells(tokens: Token[], map: BattleMap, excludeTokenId: s
   const set = new Set<string>()
   for (const t of tokens) {
     if (t.id === excludeTokenId) continue
-    set.add(cellKey(pixelToCell(t.x, t.y, map)))
+    for (const cell of tokenOccupiedCellsAt(t, map, t)) {
+      set.add(cellKey(cell))
+    }
   }
   return set
 }
@@ -257,19 +356,23 @@ export function resolveFreeDropCell(
   map: BattleMap,
 ): { x: number; y: number } {
   const blocked = occupiedCells(map.tokens, map, movingTokenId)
-  const target = pixelToCell(snapX, snapY, map)
-  if (!blocked.has(cellKey(target))) return cellToPixel(target, map)
+  const movingToken = map.tokens.find((t) => t.id === movingTokenId) ?? ({ size: 1 } as Token)
+  const target = tokenAnchorCellFromPixel(snapX, snapY, movingToken, map)
+  const canOccupy = (anchor: GridCell) =>
+    isFootprintInsideMap(movingToken, anchor, map) &&
+    tokenFootprintCellsForAnchor(movingToken, anchor).every((cell) => !blocked.has(cellKey(cell)))
+  if (canOccupy(target)) return tokenCenterForAnchorCell(target, movingToken, map)
   // 环形扩散搜索最近空格（切比雪夫距离逐环外扩）
   for (let ring = 1; ring <= 8; ring++) {
     for (let dc = -ring; dc <= ring; dc++) {
       for (let dr = -ring; dr <= ring; dr++) {
         if (Math.max(Math.abs(dc), Math.abs(dr)) !== ring) continue
         const cand: GridCell = { col: target.col + dc, row: target.row + dr }
-        if (!blocked.has(cellKey(cand))) return cellToPixel(cand, map)
+        if (canOccupy(cand)) return tokenCenterForAnchorCell(cand, movingToken, map)
       }
     }
   }
-  return cellToPixel(target, map)
+  return tokenCenterForAnchorCell(target, movingToken, map)
 }
 
 /** 向目标靠近一格（斜向一步） */

@@ -251,6 +251,50 @@ export function loadHuntingMarkIcon(): Promise<HTMLCanvasElement | null> {
   return loadBakedStatusIcon('/icons/hunting-mark.svg')
 }
 
+export function loadIllusionDanceIcon(): Promise<HTMLCanvasElement | null> {
+  const canvas = document.createElement('canvas')
+  canvas.width = 96
+  canvas.height = 96
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return Promise.resolve(null)
+
+  const g = ctx.createRadialGradient(48, 42, 8, 48, 48, 42)
+  g.addColorStop(0, '#f5d0fe')
+  g.addColorStop(0.42, '#a855f7')
+  g.addColorStop(1, '#312e81')
+  ctx.fillStyle = g
+  ctx.beginPath()
+  ctx.arc(48, 48, 42, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.strokeStyle = '#f0abfc'
+  ctx.lineWidth = 7
+  ctx.beginPath()
+  ctx.arc(48, 48, 38, 0, Math.PI * 2)
+  ctx.stroke()
+
+  ctx.strokeStyle = '#ffffff'
+  ctx.lineWidth = 8
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(27, 48)
+  ctx.bezierCurveTo(37, 25, 70, 29, 67, 51)
+  ctx.bezierCurveTo(65, 68, 39, 70, 38, 51)
+  ctx.bezierCurveTo(37, 41, 52, 39, 55, 48)
+  ctx.stroke()
+
+  ctx.strokeStyle = '#22d3ee'
+  ctx.lineWidth = 4
+  ctx.beginPath()
+  ctx.arc(60, 27, 8, -0.7, 1.9 * Math.PI)
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.arc(28, 69, 7, 0.5, 2.3 * Math.PI)
+  ctx.stroke()
+
+  return Promise.resolve(canvas)
+}
+
 export function loadOutOfBreathIcon(): Promise<HTMLCanvasElement | null> {
   return loadBakedStatusIcon('/icons/out-of-breath.png')
 }

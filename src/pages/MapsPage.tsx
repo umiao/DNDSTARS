@@ -52,7 +52,7 @@ import type { DiceRoll } from '../components/DiceRollOverlay'
 import DiceBoxD20Overlay from '../components/DiceBoxD20Overlay'
 import DiceBoxRollOverlay from '../components/DiceBoxRollOverlay'
 import { useMapStore, characterHpTokenPatch } from '../store/maps'
-import type { Token } from '../store/maps'
+import type { BattleMap, Token } from '../store/maps'
 import { useCharacterStore } from '../store/characters'
 import {
   clearSharedEventBacklog,
@@ -74,16 +74,18 @@ import {
 } from '../lib/classFeatures'
 import { isCalmMindActive, isOutOfBreath, triggerOutOfBreath } from '../lib/calmMind'
 import {
+  agileLeapMoveFeet,
   canAttemptDodge,
+  canOfferAgileLeap,
+  canOfferGaleCombo,
   ENEMY_MELEE_ATTACK_BONUS,
   formatDodgePrompt,
-  offerAgileLeap,
-  offerGaleCombo,
   resolvePhysicalEnemyHit,
 } from '../lib/archerBaseFeatures'
 import { TOKEN_STATUS_CLEAR_PATCH, isMovementLocked, isTokenMovementLocked } from '../lib/combatStatus'
 import {
   attackDamageDiceCount,
+  doubleArrowExtraDamageSides,
   getEffectiveAbilityMod,
   resolveDexSaveDamage,
   resolveRangedAttackRoll,
@@ -104,9 +106,11 @@ import {
 import {
   CombatResolutionRunner,
   createCombatResolutionContext,
+  type CombatMutation,
   type CombatResolutionSession,
   type CombatResolutionStage,
 } from '../lib/combatResolutionPipeline'
+import { executeCombatMutationsAuthority } from '../lib/combatAuthority'
 import { adjustDamageAgainstToken, enemyCombatInput, getTokenTargetAc } from '../lib/enemyCombatStats'
 import {
   clampGridSize,
@@ -119,7 +123,11 @@ import {
   movementRadiusPx,
   occupiedCells,
   pixelToCell,
-  snapToCellCenter,
+  snapTokenToGridCenter,
+  tokenAnchorCellFromPixel,
+  tokenCenterForAnchorCell,
+  tokenFootprintDistanceCells,
+  tokenOccupiedCellsAt,
   type GridCell,
 } from '../lib/gridCombat'
 import {
@@ -179,6 +187,7 @@ import type {
   SharedCombatState,
   SharedDodgeState,
   SharedStableMindState,
+  SharedGaleComboState,
   SharedPlayerActionState,
   SharedPlayerActionAckState,
   SharedDiceState,
@@ -207,6 +216,13 @@ import {
   tokenIntersectsDeleteRect,
   seededDieValue,
 } from './mapsPageHelpers'
+import { isAuthoritativeActionSnapshotReady } from '../lib/playerActionSync'
+import {
+  capturePlayerActionResultBaseline,
+  summarizePlayerActionResult,
+  type PlayerActionResultBaseline,
+} from '../lib/playerActionResult'
+import { shouldSendPlayerReadyFeatureToDm } from '../lib/playerFeatureActivation'
 // [T15/G3] enemyApReconcile.test.ts 从 './MapsPage' 引用 reconcileEnemyAp —— 维持该 re-export。
 export { reconcileEnemyAp }
 
@@ -251,6 +267,7 @@ export default function MapsPage() {
     return saved === 'dm' || saved === 'player' ? saved : null
   })
   const [combatActive, setCombatActive] = useState(false)
+  const [playerCombatEndedLocked, setPlayerCombatEndedLocked] = useState(false)
   const [round, setRound] = useState(1)
   const [initiativeOrder, setInitiativeOrder] = useState<InitiativeEntry[]>([])
   const [initiativeIndex, setInitiativeIndex] = useState(0)
@@ -288,6 +305,12 @@ export default function MapsPage() {
     /** 疾风连击：本次释放免 AP */
     waiveAp?: boolean
   } | null>(null)
+  const [featureTargeting, setFeatureTargeting] = useState<{
+    featureKey: 'illusionDance'
+    casterId: string
+    maxTargets: number
+    selectedTokenIds: string[]
+  } | null>(null)
   const [aoePreviewCell, setAoePreviewCell] = useState<GridCell | null>(null)
   const [aoeRectRotation, setAoeRectRotation] = useState(0)
   const [roll, setRoll] = useState<DiceRoll | null>(null)
@@ -298,6 +321,7 @@ export default function MapsPage() {
   const resolvingAoeRef = useRef(false)
   const applyingSharedCombatRef = useRef(false)
   const advancingTurnRef = useRef(false)
+  const orderedCombatPublishRef = useRef(false)
   const combatResolutionRunnerRef = useRef(new CombatResolutionRunner())
   const [diceBoxD20, setDiceBoxD20] = useState<{
     id: number
@@ -385,6 +409,51 @@ export default function MapsPage() {
     dc: number
     expiresAt?: number
   } | null>(null)
+  const [sharedGaleComboPrompt, setSharedGaleComboPrompt] = useState<{
+    id: string
+    casterChar: Character
+    triggerLabel: string
+    expiresAt?: number
+  } | null>(null)
+  const combatDialogRef = useRef<{
+    id: number
+    title: string
+    message: string
+    confirmText: string
+    cancelText?: string
+    tone: 'sky' | 'violet' | 'amber' | 'rose'
+    resolve: (accepted: boolean) => void
+  } | null>(null)
+  const [combatDialog, setCombatDialog] = useState<typeof combatDialogRef.current>(null)
+  const setCombatDialogLocked = (next: typeof combatDialogRef.current) => {
+    combatDialogRef.current = next
+    setCombatDialog(next)
+  }
+  const showCombatDialog = (input: {
+    title: string
+    message: string
+    confirmText?: string
+    cancelText?: string
+    tone?: 'sky' | 'violet' | 'amber' | 'rose'
+  }) =>
+    new Promise<boolean>((resolve) => {
+      setCombatDialogLocked({
+        id: Date.now() + Math.random(),
+        title: input.title,
+        message: input.message,
+        confirmText: input.confirmText ?? '确认',
+        cancelText: input.cancelText,
+        tone: input.tone ?? 'sky',
+        resolve,
+      })
+    })
+  const closeCombatDialog = (accepted: boolean) => {
+    const current = combatDialogRef.current
+    setCombatDialogLocked(null)
+    current?.resolve(accepted)
+  }
+  const showCombatNotice = (title: string, message: string, tone: 'sky' | 'violet' | 'amber' | 'rose' = 'sky') =>
+    showCombatDialog({ title, message, confirmText: '知道了', tone })
   const [sharedDodgeNow, setSharedDodgeNow] = useState(Date.now())
   const [pendingPlayerAction, setPendingPlayerAction] = useState<{
     id: string
@@ -398,7 +467,6 @@ export default function MapsPage() {
     pendingPlayerActionRef.current = next
     setPendingPlayerAction(next)
   }
-  const playerActionRollbackRef = useRef<Record<string, () => void>>({})
   const resolvingSkillTargetRef = useRef<{ key: string; at: number } | null>(null)
   const [showMoveRange, setShowMoveRange] = useState(false)
   const [disengagedCharIds, setDisengagedCharIds] = useState<Set<string>>(() => new Set())
@@ -420,8 +488,14 @@ export default function MapsPage() {
     targetCharId: string
     resolve: (useStableMind: boolean) => void
   } | null>(null)
+  const pendingSharedGaleComboRef = useRef<{
+    id: string
+    casterCharId: string
+    resolve: (useGaleCombo: boolean) => void
+  } | null>(null)
   const suppressedDodgePromptIdsRef = useRef(new Set<string>())
   const suppressedStableMindPromptIdsRef = useRef(new Set<string>())
+  const suppressedGaleComboPromptIdsRef = useRef(new Set<string>())
   const playerActionSeqRef = useRef(0)
   const seenPlayerActionIdsRef = useRef(new Set<string>())
   const recentPlayerActionKeysRef = useRef(new Map<string, number>())
@@ -436,7 +510,7 @@ export default function MapsPage() {
   const combatIdRef = useRef('')
 
   useEffect(() => {
-    if (!sharedDodgePrompt?.expiresAt && !sharedStableMindPrompt?.expiresAt) return
+    if (!sharedDodgePrompt?.expiresAt && !sharedStableMindPrompt?.expiresAt && !sharedGaleComboPrompt?.expiresAt) return
     setSharedDodgeNow(Date.now())
     const timer = window.setInterval(() => setSharedDodgeNow(Date.now()), 250)
     return () => window.clearInterval(timer)
@@ -445,6 +519,8 @@ export default function MapsPage() {
     sharedDodgePrompt?.expiresAt,
     sharedStableMindPrompt?.id,
     sharedStableMindPrompt?.expiresAt,
+    sharedGaleComboPrompt?.id,
+    sharedGaleComboPrompt?.expiresAt,
   ])
 
   useEffect(() => {
@@ -453,6 +529,8 @@ export default function MapsPage() {
   const playerTurnStartedRef = useRef(new Set<string>())
   const multiStrikeHitsRef = useRef<Record<string, number>>({})
   const combatActiveRef = useRef(false)
+  const playerActionResultBaselinesRef = useRef<Record<string, PlayerActionResultBaseline>>({})
+  const previousCombatActiveRef = useRef(false)
   const roundRef = useRef(1)
   const initiativeIndexRef = useRef(0)
   const initiativeOrderRef = useRef<InitiativeEntry[]>([])
@@ -513,6 +591,17 @@ export default function MapsPage() {
       `${character.name} ${spentText}：${action}${detail ? `（${detail}）` : ''}。剩余 AP ${remaining}/${character.actionPoints}`,
       'turn',
     )
+  }
+
+  const consumeGaleComboReady = (characterId: string, actionLabel: string) => {
+    const latest = useCharacterStore.getState().characters.find((c) => c.id === characterId)
+    if (!latest?.combatBuffs?.galeComboReady) return false
+    useClassFeature(characterId, 'galeCombo')
+    updateChar(characterId, {
+      combatBuffs: { ...latest.combatBuffs, galeComboReady: undefined },
+    })
+    pushCombatLog(`${latest.name} 消耗疾风连击：${actionLabel} 不消耗 AP。`, 'turn')
+    return true
   }
 
   const publishSharedDiceEvent = (event: SharedDiceState) => {
@@ -607,7 +696,7 @@ export default function MapsPage() {
   const publishCombatState = (
     patch?: Partial<Omit<SharedCombatState, 'mapId' | 'updatedAt'>>,
   ) => {
-    if (!activeMap || mode !== 'dm') return
+    if (!activeMap || mode !== 'dm') return Promise.resolve()
     const seq = ++combatPublishSeqRef.current
     const state: SharedCombatState = {
       mapId: activeMap.id,
@@ -620,10 +709,12 @@ export default function MapsPage() {
       updatedAt: Date.now(),
       ...patch,
     }
-    void (async () => {
+    const task = (async () => {
       if (seq !== combatPublishSeqRef.current) return
       await saveSharedResource('combat', state)
     })()
+    void task
+    return task
   }
 
   const applySharedCombatState = (state: SharedCombatState | null) => {
@@ -659,10 +750,15 @@ export default function MapsPage() {
     combatIdRef.current = incomingCombatId
     if (combatChanged || !active) {
       setPendingPlayerActionLocked(null)
-      playerActionRollbackRef.current = {}
       seenPlayerActionAckIdsRef.current.clear()
       seenPlayerActionIdsRef.current.clear()
+      playerActionResultBaselinesRef.current = {}
       clearPlayerCombatUI()
+    }
+    if (active) {
+      setPlayerCombatEndedLocked(false)
+    } else if (!isDM && incomingCombatId) {
+      setPlayerCombatEndedLocked(true)
     }
     setCombatActive(active)
     combatActiveRef.current = active
@@ -731,6 +827,46 @@ export default function MapsPage() {
   const selectedCharacterToken = activeMap?.tokens.find((t) => t.id === selectedCharacterTokenId) ?? null
   const activeChar = characters.find((c) => c.id === activeCharId) ?? null
 
+  const applyCombatMutationsFromHooks = (mutations: CombatMutation[]) => {
+    if (!isDM || !activeMap || mutations.length === 0) return
+    const latestMap = useMapStore.getState().maps.find((map) => map.id === activeMap.id) ?? activeMap
+    const beforeCharacters = useCharacterStore.getState().characters
+    const beforeCharactersById = new Map(beforeCharacters.map((character) => [character.id, character]))
+    const beforeTokensById = new Map(latestMap.tokens.map((token) => [token.id, token]))
+    const result = executeCombatMutationsAuthority(
+      {
+        characters: beforeCharacters,
+        enemyApByToken: enemyApByTokenRef.current,
+        map: latestMap,
+      },
+      { role: 'dm', mutations },
+    )
+
+    for (const character of result.state.characters) {
+      const before = beforeCharactersById.get(character.id)
+      if (!before || JSON.stringify(before) !== JSON.stringify(character)) {
+        updateChar(character.id, character)
+      }
+    }
+
+    for (const token of result.state.map.tokens) {
+      const before = beforeTokensById.get(token.id)
+      if (!before || JSON.stringify(before) !== JSON.stringify(token)) {
+        updateToken(result.state.map.id, token.id, token)
+      }
+    }
+
+    if (JSON.stringify(enemyApByTokenRef.current) !== JSON.stringify(result.state.enemyApByToken)) {
+      enemyApByTokenRef.current = result.state.enemyApByToken
+      setEnemyApByToken(result.state.enemyApByToken)
+    }
+
+    for (const entry of result.logs) pushCombatLog(entry.text, entry.kind)
+    for (const failure of result.failures) {
+      pushCombatLog(`结算变更未执行：${failure.mutation.type} (${failure.reason})`, 'system')
+    }
+  }
+
   const createCombatResolutionSessionForAction = (input: {
     actorToken?: Token
     targetToken?: Token
@@ -772,7 +908,9 @@ export default function MapsPage() {
     session.context.round = roundRef.current
     session.context.map = latestMap
     session.context.characters = useCharacterStore.getState().characters
-    await combatResolutionRunnerRef.current.runStage(session, stage)
+    const mutationStart = session.mutations.length
+    const result = await combatResolutionRunnerRef.current.runStage(session, stage)
+    applyCombatMutationsFromHooks(result.mutations.slice(mutationStart))
   }
 
   const handleDeleteBoxConfirm = (rect: DeleteSelectionRect) => {
@@ -797,14 +935,15 @@ export default function MapsPage() {
   }
 
   const resetRoundApForActiveMap = (reason: string) => {
-    if (mode !== 'dm') return useCharacterStore.getState().characters
-    if (!activeMap) return useCharacterStore.getState().characters
+    const currentCharacters = useCharacterStore.getState().characters
+    if (mode !== 'dm') return { characters: currentCharacters, saved: Promise.resolve(Date.now()) }
+    if (!activeMap) return { characters: currentCharacters, saved: Promise.resolve(Date.now()) }
     const charIds = new Set(
       activeMap.tokens
         .map((token) => token.characterId)
         .filter((id): id is string => !!id),
     )
-    if (charIds.size === 0) return useCharacterStore.getState().characters
+    if (charIds.size === 0) return { characters: currentCharacters, saved: Promise.resolve(Date.now()) }
     const characterState = useCharacterStore.getState()
     let changed = false
     const nextCharacters = characterState.characters.map((ch) => {
@@ -814,15 +953,13 @@ export default function MapsPage() {
       return { ...ch, currentAP: ch.actionPoints }
     })
     if (changed) {
+      const updatedAt = Date.now()
       console.info('[combat-ap-reset]', { reason, round, mapId: activeMap.id })
       useCharacterStore.setState({ characters: nextCharacters })
-      void saveSharedResource('characters', {
-        characters: nextCharacters,
-        selectedId: characterState.selectedId,
-        updatedAt: Date.now(),
-      })
+      const saved = useCharacterStore.getState().saveSharedNow(updatedAt)
+      return { characters: nextCharacters, saved }
     }
-    return nextCharacters
+    return { characters: nextCharacters, saved: Promise.resolve(Date.now()) }
   }
 
   useEffect(() => {
@@ -956,6 +1093,7 @@ export default function MapsPage() {
 
   useEffect(() => {
     if (!activeMap || applyingSharedCombatRef.current) return
+    if (orderedCombatPublishRef.current) return
     if (mode !== 'dm') return
     if (!combatActive && initiativeOrder.length === 0) return
     if (combatActive && initiativeOrder.length === 0) return
@@ -1018,6 +1156,26 @@ export default function MapsPage() {
 
   const clearPlayerCombatUI = () => {
     setShowMoveRange(false)
+  }
+
+  const clearPlayerCombatEndUI = () => {
+    clearPlayerCombatUI()
+    const pendingDialog = combatDialogRef.current
+    setCombatDialogLocked(null)
+    pendingDialog?.resolve(false)
+    setTargeting(null)
+    setFeatureTargeting(null)
+    setAoePreviewCell(null)
+    setAoeRectRotation(0)
+    setDodgePrompt(null)
+    setSharedDodgePrompt(null)
+    setSharedStableMindPrompt(null)
+    setSharedGaleComboPrompt(null)
+    setPendingPlayerActionLocked(null)
+    setSelectedTokenId(null)
+    setSelectedCharacterTokenId(null)
+    setActiveCharId(null)
+    setCharPanel(null)
   }
 
   const turnCharacter =
@@ -1182,6 +1340,79 @@ export default function MapsPage() {
     }
   }, [activeMap?.id, isDM, characters, playerChar?.id, visibleChars])
 
+  useEffect(() => {
+    if (!activeMap) return
+    let cancelled = false
+    const load = async () => {
+      const state = await loadSharedResource<SharedGaleComboState>('gale-combo')
+      if (cancelled || !state || state.mapId !== activeMap.id) return
+      if (suppressedGaleComboPromptIdsRef.current.has(state.id)) return
+      if (isDM) {
+        const pending = pendingSharedGaleComboRef.current
+        if (!pending || pending.id !== state.id) return
+        if (
+          state.status === 'pending' &&
+          state.expiresAt != null &&
+          Date.now() >= state.expiresAt
+        ) {
+          pendingSharedGaleComboRef.current = null
+          await saveSharedResource<SharedGaleComboState>('gale-combo', {
+            ...state,
+            status: 'done',
+            useGaleCombo: false,
+            updatedAt: Date.now(),
+          })
+          pending.resolve(false)
+          return
+        }
+        if (state.status === 'answered') {
+          pendingSharedGaleComboRef.current = null
+          await saveSharedResource<SharedGaleComboState>('gale-combo', {
+            ...state,
+            status: 'done',
+            updatedAt: Date.now(),
+          })
+          pending.resolve(!!state.useGaleCombo)
+        }
+        return
+      }
+
+      if (
+        state.status === 'pending' &&
+        state.expiresAt != null &&
+        Date.now() >= state.expiresAt
+      ) {
+        setSharedGaleComboPrompt((current) => (current?.id === state.id ? null : current))
+        return
+      }
+      if (state.status !== 'pending') {
+        setSharedGaleComboPrompt((current) => (current?.id === state.id ? null : current))
+        return
+      }
+      const casterChar = characters.find((c) => c.id === state.casterCharId)
+      const canAnswer =
+        !!casterChar &&
+        casterChar.currentHp > 0 &&
+        (casterChar.id === playerChar?.id ||
+          visibleChars.some((c) => c.id === casterChar.id) ||
+          !casterChar.dmNotes)
+      if (canAnswer) {
+        setSharedGaleComboPrompt({
+          id: state.id,
+          casterChar,
+          triggerLabel: state.triggerLabel,
+          expiresAt: state.expiresAt,
+        })
+      }
+    }
+    void load()
+    const timer = window.setInterval(load, 500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [activeMap?.id, isDM, characters, playerChar?.id, visibleChars])
+
   const canControlPlayerTurn =
     combatActive &&
     currentInitiativeToken?.type === 'player' &&
@@ -1190,6 +1421,8 @@ export default function MapsPage() {
     !!currentInitiativeToken &&
     isTokenAlive(currentInitiativeToken, characters) &&
     (isDM || (!pendingPlayerAction && turnCharacter.id === playerChar?.id))
+
+  const playerCombatLocked = !isDM && playerCombatEndedLocked && !combatActive
 
   const myPlayerToken =
     activeMap && turnCharacter
@@ -1514,12 +1747,15 @@ export default function MapsPage() {
       const delta = deltas[e.key]
       if (!delta) return
       e.preventDefault()
-      const from = pixelToCell(selectedToken.x, selectedToken.y, activeMap)
+      const from = tokenAnchorCellFromPixel(selectedToken.x, selectedToken.y, selectedToken, activeMap)
       const to: GridCell = { col: from.col + delta[0], row: from.row + delta[1] }
       // 目标格被其它 token 占用则不移动（与拖放占格规则一致）
       const blocked = occupiedCells(activeMap.tokens, activeMap, selectedToken.id)
-      if (blocked.has(cellKey(to))) return
-      updateToken(activeMap.id, selectedToken.id, cellToPixel(to, activeMap))
+      const pos = tokenCenterForAnchorCell(to, selectedToken, activeMap)
+      const candidate = { ...selectedToken, ...pos }
+      const cells = tokenOccupiedCellsAt(candidate, activeMap, candidate)
+      if (cells.some((cell) => cell.col < 0 || cell.row < 0 || blocked.has(cellKey(cell)))) return
+      updateToken(activeMap.id, selectedToken.id, pos)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -1540,17 +1776,20 @@ export default function MapsPage() {
       {
         doubleArrow?: boolean
         eagleEye?: boolean
+        galeCombo?: boolean
         silentDraw?: boolean
         preciseStrike?: boolean
         calmMind?: boolean
         calmSpiritStacks?: number
         outOfBreath?: boolean
         huntingMarkStacks?: number
+        illusionDance?: boolean
       }
     > = {}
     for (const t of activeMap?.tokens ?? []) {
       const entry: (typeof badges)[string] = {}
       if ((t.huntingMarkStacks ?? 0) > 0) entry.huntingMarkStacks = t.huntingMarkStacks
+      if ((t.illusionDanceTurns ?? 0) > 0) entry.illusionDance = true
       if (t.characterId) {
         const ch = characters.find((c) => c.id === t.characterId)
         if (ch) {
@@ -1559,6 +1798,9 @@ export default function MapsPage() {
           }
           if ((ch.combatBuffs?.eagleEyeTurns ?? 0) > 0 && findClassTrait(ch, 'eagleEye')) {
             entry.eagleEye = true
+          }
+          if (ch.combatBuffs?.galeComboReady && findClassTrait(ch, 'galeCombo')) {
+            entry.galeCombo = true
           }
           if (
             combatActive &&
@@ -1670,7 +1912,7 @@ export default function MapsPage() {
     next?.()
   }
 
-  const applyKnockbackFromSave = (
+  const applyKnockbackFromSave = async (
     tokenId: string,
     targetCharId: string | undefined,
     caster: Character,
@@ -1679,10 +1921,16 @@ export default function MapsPage() {
   ) => {
     if (!activeMap || save.success) return
     updateToken(activeMap.id, tokenId, { knockbackTurns: KNOCKBACK_DEFAULT_TURNS })
-    if (offerGaleCombo(caster, '击飞')) {
-      updateChar(casterId, {
-        combatBuffs: { ...caster.combatBuffs, galeComboReady: true },
-      })
+    const latestCaster = useCharacterStore.getState().characters.find((c) => c.id === casterId) ?? caster
+    if (canOfferGaleCombo(latestCaster)) {
+      const accepted = await requestSharedGaleComboChoice(latestCaster, '对目标造成击飞，且目标豁免失败')
+      if (accepted) {
+        const refreshedCaster = useCharacterStore.getState().characters.find((c) => c.id === casterId) ?? latestCaster
+        updateChar(casterId, {
+          combatBuffs: { ...refreshedCaster.combatBuffs, galeComboReady: true },
+        })
+        pushCombatLog(`${refreshedCaster.name} 发动疾风连击：下一次技能或基础射击不消耗 AP。`, 'turn')
+      }
     }
     if (targetCharId) {
       const ch = useCharacterStore.getState().characters.find((c) => c.id === targetCharId)
@@ -1749,7 +1997,7 @@ export default function MapsPage() {
       const save = await resolveAnimatedKnockbackSave(caster, token, targetChar, '击飞敏捷豁免', {
         disadvantage: pending.skill.knockbackSaveDisadvantage,
       })
-      applyKnockbackFromSave(pending.tokenId, pending.targetCharId, caster, pending.casterId, save)
+      await applyKnockbackFromSave(pending.tokenId, pending.targetCharId, caster, pending.casterId, save)
       const saveLabel = formatKnockbackSaveLabel(save)
 
       if (index + 1 < queue.length) {
@@ -1884,7 +2132,7 @@ export default function MapsPage() {
     if (!activeMap) return null
     const candidates = activeMap.tokens.filter((t) => isEnemyTarget(t) && isTokenAlive(t, useCharacterStore.getState().characters) && (!filter || filter(t)))
     if (candidates.length === 0) {
-      alert('没有可选目标')
+      void showCombatNotice('没有可选目标', '当前没有符合条件的目标。', 'amber')
       return null
     }
     const picked = window.prompt(
@@ -1893,6 +2141,192 @@ export default function MapsPage() {
         .join('\n')}`,
     )
     return candidates[Number(picked) - 1] ?? null
+  }
+
+  const getLatestActiveMap = () =>
+    activeMap ? useMapStore.getState().maps.find((map) => map.id === activeMap.id) ?? activeMap : undefined
+
+  const uniqueTokenIds = (ids: string[]) => Array.from(new Set(ids.filter(Boolean)))
+
+  const sortTokensByInitiative = (tokens: Token[]) => {
+    const order = initiativeOrderRef.current
+    const orderIndex = new Map(order.map((entry, index) => [entry.tokenId, index]))
+    return [...tokens].sort(
+      (a, b) =>
+        (orderIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (orderIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER) ||
+        a.label.localeCompare(b.label),
+    )
+  }
+
+  const illusionDanceTargetLimit = (caster: Character) => {
+    const trait = findClassTrait(caster, 'illusionDance')
+    return Math.min(3, Math.max(1, trait?.level ?? 1))
+  }
+
+  const illusionDancePullPosition = (casterToken: Token, target: Token, map: BattleMap) => {
+    if (tokenFootprintDistanceCells(casterToken, target, map) <= 2) return { x: target.x, y: target.y }
+
+    const g = Math.max(1, map.gridSize)
+    const cols = Math.max(1, Math.floor((map.width - map.gridOffsetX) / g))
+    const rows = Math.max(1, Math.floor((map.height - map.gridOffsetY) / g))
+    const blocked = occupiedCells(map.tokens, map, target.id)
+    const casterCell = pixelToCell(casterToken.x, casterToken.y, map)
+    const dirX = target.x - casterToken.x
+    const dirY = target.y - casterToken.y
+    const dirLen = Math.max(1, Math.hypot(dirX, dirY))
+    let best: { x: number; y: number; score: number } | null = null
+
+    for (let col = casterCell.col - 6; col <= casterCell.col + 6; col++) {
+      for (let row = casterCell.row - 6; row <= casterCell.row + 6; row++) {
+        const candidate = tokenCenterForAnchorCell({ col, row }, target, map)
+        const candidateToken = { ...target, ...candidate }
+        const cells = tokenOccupiedCellsAt(candidateToken, map, candidate)
+        if (cells.some((cell) => cell.col < 0 || cell.row < 0 || cell.col >= cols || cell.row >= rows)) continue
+        if (cells.some((cell) => blocked.has(cellKey(cell)))) continue
+        if (tokenFootprintDistanceCells(casterToken, candidateToken, map) > 2) continue
+
+        const relX = candidate.x - casterToken.x
+        const relY = candidate.y - casterToken.y
+        const projection = (relX * dirX + relY * dirY) / dirLen
+        if (projection < -0.5) continue
+        const lineDistance = Math.abs(relX * dirY - relY * dirX) / dirLen
+        const distanceMoved = Math.hypot(candidate.x - target.x, candidate.y - target.y)
+        const frontDistance = Math.abs(projection - g * 2)
+        const score = lineDistance * 4 + frontDistance + distanceMoved * 0.2
+        if (!best || score < best.score) best = { ...candidate, score }
+      }
+    }
+
+    return best ? { x: best.x, y: best.y } : { x: target.x, y: target.y }
+  }
+
+  const resolveIllusionDance = async (caster: Character, targetTokenIds: string[]) => {
+    const map = getLatestActiveMap()
+    if (!map) return false
+    const trait = findClassTrait(caster, 'illusionDance')
+    if (!trait || trait.uses <= 0) {
+      await showCombatNotice('迷幻舞步', '本场次数已用完。', 'amber')
+      return false
+    }
+    if (caster.currentAP < 1) {
+      await showCombatNotice('行动点不足', '需要 1 AP。', 'amber')
+      return false
+    }
+    if ((caster.qi ?? 0) < 1) {
+      await showCombatNotice('气不足', '需要 1 点气。', 'amber')
+      return false
+    }
+    const casterToken = map.tokens.find((token) => token.characterId === caster.id)
+    if (!casterToken) return false
+    const limit = illusionDanceTargetLimit(caster)
+    const selectedIds = uniqueTokenIds(targetTokenIds).slice(0, limit)
+    const targets = sortTokensByInitiative(
+      selectedIds
+        .map((id) => map.tokens.find((token) => token.id === id))
+        .filter((token): token is Token =>
+          !!token && isEnemyTarget(token) && isTokenAlive(token, useCharacterStore.getState().characters),
+        ),
+    )
+    if (targets.length === 0) return false
+
+    updateChar(caster.id, {
+      currentAP: caster.currentAP - 1,
+      qi: (caster.qi ?? 0) - 1,
+      traits: caster.traits.map((t) =>
+        t.featureKey === 'illusionDance' ? { ...t, uses: Math.max(0, t.uses - 1) } : t,
+      ),
+    })
+
+    const labels: string[] = []
+    for (const target of targets) {
+      const latestMap = getLatestActiveMap() ?? map
+      const latestTarget = latestMap.tokens.find((token) => token.id === target.id) ?? target
+      const targetChar = latestTarget.characterId
+        ? useCharacterStore.getState().characters.find((c) => c.id === latestTarget.characterId)
+        : undefined
+      const save = await resolveAbilitySave(caster, latestTarget, targetChar, 'wis', '迷幻舞步感知豁免')
+      if (!save.success) {
+        updateToken(latestMap.id, latestTarget.id, {
+          ...illusionDancePullPosition(casterToken, latestTarget, latestMap),
+          noMoveTurns: 1,
+          illusionDanceTurns: 1,
+        })
+        addConditionToCharacter(latestTarget.characterId, NO_MOVE_STATUS_LABEL)
+      }
+      labels.push(`${latestTarget.label}：${abilitySaveLabel('感知豁免', save, '成功', '失败，被拉近且不能移动')}`)
+    }
+    pushApLog(caster, 1, '激活迷幻舞步', labels.join('；'))
+    return true
+  }
+
+  const beginIllusionDanceTargeting = (caster: Character) => {
+    const trait = findClassTrait(caster, 'illusionDance')
+    if (!trait || trait.uses <= 0) {
+      void showCombatNotice('迷幻舞步', '本场次数已用完。', 'amber')
+      return
+    }
+    if (caster.currentAP < 1) {
+      void showCombatNotice('行动点不足', '需要 1 AP。', 'amber')
+      return
+    }
+    if ((caster.qi ?? 0) < 1) {
+      void showCombatNotice('气不足', '需要 1 点气。', 'amber')
+      return
+    }
+    if (!activeMap) return
+    setTargeting(null)
+    setAoePreviewCell(null)
+    setShowMoveRange(false)
+    setFeatureTargeting({
+      featureKey: 'illusionDance',
+      casterId: caster.id,
+      maxTargets: illusionDanceTargetLimit(caster),
+      selectedTokenIds: [],
+    })
+  }
+
+  const submitIllusionDanceTargets = (tokenIds: string[]) => {
+    if (!featureTargeting) return
+    const caster = useCharacterStore.getState().characters.find((c) => c.id === featureTargeting.casterId)
+    if (!caster) return
+    const selectedIds = uniqueTokenIds(tokenIds).slice(0, featureTargeting.maxTargets)
+    if (selectedIds.length === 0) return
+    if (!isDM) {
+      if (
+        sendPlayerActivateFeatureRequest('illusionDance', {
+          targetTokenId: selectedIds[0],
+          targetTokenIds: selectedIds,
+        })
+      ) {
+        setFeatureTargeting(null)
+      }
+      return
+    }
+    void resolveIllusionDance(caster, selectedIds).then((ok) => {
+      if (ok) setFeatureTargeting(null)
+    })
+  }
+
+  const handleFeatureTargetTokenClick = (tokenId: string) => {
+    if (!featureTargeting || featureTargeting.featureKey !== 'illusionDance' || !activeMap) return false
+    const token = activeMap.tokens.find((item) => item.id === tokenId)
+    if (!token || !isEnemyTarget(token) || !isTokenAlive(token, useCharacterStore.getState().characters)) {
+      return true
+    }
+    const alreadySelected = featureTargeting.selectedTokenIds.includes(token.id)
+    const nextIds = alreadySelected
+      ? featureTargeting.selectedTokenIds.filter((id) => id !== token.id)
+      : [...featureTargeting.selectedTokenIds, token.id].slice(0, featureTargeting.maxTargets)
+    if (featureTargeting.maxTargets <= 1) {
+      submitIllusionDanceTargets([token.id])
+      return true
+    }
+    setFeatureTargeting({ ...featureTargeting, selectedTokenIds: nextIds })
+    if (nextIds.length >= featureTargeting.maxTargets) {
+      submitIllusionDanceTargets(nextIds)
+    }
+    return true
   }
 
   const resolveEnemyAutoDodge = async (
@@ -1980,13 +2414,13 @@ export default function MapsPage() {
 
   const moveTokenByCells = (token: Token, dx: number, dy: number, cells: number) => {
     if (!activeMap || cells <= 0) return
-    const from = pixelToCell(token.x, token.y, activeMap)
+    const from = tokenAnchorCellFromPixel(token.x, token.y, token, activeMap)
     const len = Math.hypot(dx, dy) || 1
     const to = {
       col: from.col + Math.round((dx / len) * cells),
       row: from.row + Math.round((dy / len) * cells),
     }
-    updateToken(activeMap.id, token.id, cellToPixel(to, activeMap))
+    updateToken(activeMap.id, token.id, tokenCenterForAnchorCell(to, token, activeMap))
   }
 
   const eagleStrikeExtraDiceCount = (rank: number) => {
@@ -2122,13 +2556,16 @@ export default function MapsPage() {
     values: number[],
     caster: Character,
     enabled: boolean,
+    targetName: string,
   ): Promise<{ values: number[]; labelParts: string[] }> => {
     if (!enabled) return { values, labelParts: [] }
     const trait = findClassTrait(caster, 'doubleArrow')
     if (!trait) return { values, labelParts: [] }
+    const extraSides = doubleArrowExtraDamageSides(trait.level)
+    const extra = await rollDiceBoxValues(1, extraSides, '双箭额外伤害', targetName)
     return {
-      values,
-      labelParts: ['双箭：2支箭'],
+      values: [...values, ...extra],
+      labelParts: [`双箭+1d${extraSides}`],
     }
   }
 
@@ -2140,6 +2577,10 @@ export default function MapsPage() {
     d20Roll?: DiceRoll['d20Roll']
     knockbackPending?: KnockbackPending
     selfCooldownReduction?: number
+    damageBeforeDefense?: number
+    damageAfterDefense?: number
+    attackDefenseDiff?: number | null
+    attackDefenseModifier?: number
   }
 
   const resolveAttack = async (
@@ -2158,6 +2599,7 @@ export default function MapsPage() {
       }
       presetDamageValues?: number[]
       presetFeatureLabelParts?: string[]
+      appendFeatureDamageToPreset?: boolean
     },
   ): Promise<AttackResolveResult | undefined> => {
     const attackTargeting = opts?.targetingOverride ?? targeting
@@ -2281,17 +2723,22 @@ export default function MapsPage() {
         await runCombatResolutionStage(resolutionSession, 'beforeDamageRoll')
         const diceCount = attackDamageDiceCount(skill, !!(doubleArrow && isRanged))
         const damageSides = isBasicShot(skill) ? 8 : skill.damageSides
-        values = await rollDiceBoxValues(diceCount, damageSides, `${skill.name} 伤害`, token.label)
+        values =
+          opts?.presetDamageValues?.slice() ??
+          await rollDiceBoxValues(diceCount, damageSides, `${skill.name} 伤害`, token.label)
+        featureExtraLabelParts = opts?.presetFeatureLabelParts?.slice() ?? []
         const extraD6Count = windTraceExtraDiceCount(skill.skillTreeId, skillRank, caster!, token, opts?.aoeTargetCount)
         if (extraD6Count > 0) {
           const extraValues = await rollDiceBoxValues(extraD6Count, 6, `${skill.name} 额外伤害`, token.label)
           values = [...values, ...extraValues]
+          featureExtraLabelParts.push(`额外+${extraD6Count}d6`)
         }
         if (skill.skillTreeId === 'eagleStrike') {
           const extraD6Count = eagleStrikeExtraDiceCount(skillRank)
           if (extraD6Count > 0) {
             const extraValues = await rollDiceBoxValues(extraD6Count, 6, `${skill.name} 击飞伤害`, token.label)
             values = [...values, ...extraValues]
+            featureExtraLabelParts.push(`击飞伤害+${extraD6Count}d6`)
           }
         }
         if (
@@ -2306,6 +2753,7 @@ export default function MapsPage() {
           values,
           caster!,
           !!(doubleArrow && isRanged),
+          token.label,
         )
         values = doubleArrowExtra.values
         featureExtraLabelParts = [...featureExtraLabelParts, ...doubleArrowExtra.labelParts]
@@ -2387,17 +2835,19 @@ export default function MapsPage() {
         opts?.presetDamageValues?.slice() ??
         await rollDiceBoxValues(diceCount, damageSides, `${skill.name} 伤害`, token.label)
       featureExtraLabelParts = opts?.presetFeatureLabelParts?.slice() ?? []
-      if (caster && !opts?.presetDamageValues) {
+      if (caster && (!opts?.presetDamageValues || opts?.appendFeatureDamageToPreset)) {
         const extraD6Count = windTraceExtraDiceCount(skill.skillTreeId, skillRank, caster, token, opts?.aoeTargetCount)
         if (extraD6Count > 0) {
           const extraValues = await rollDiceBoxValues(extraD6Count, 6, `${skill.name} 额外伤害`, token.label)
           values = [...values, ...extraValues]
+          featureExtraLabelParts.push(`额外+${extraD6Count}d6`)
         }
         if (skill.skillTreeId === 'eagleStrike') {
           const extraD6Count = eagleStrikeExtraDiceCount(skillRank)
           if (extraD6Count > 0) {
             const extraValues = await rollDiceBoxValues(extraD6Count, 6, `${skill.name} 击飞伤害`, token.label)
             values = [...values, ...extraValues]
+            featureExtraLabelParts.push(`击飞伤害+${extraD6Count}d6`)
           }
         }
         if (
@@ -2412,6 +2862,7 @@ export default function MapsPage() {
           values,
           caster,
           !!doubleArrow,
+          token.label,
         )
         values = doubleArrowExtra.values
         featureExtraLabelParts = [...featureExtraLabelParts, ...doubleArrowExtra.labelParts]
@@ -2434,11 +2885,7 @@ export default function MapsPage() {
         total = 0
         featureExtraLabelParts = []
       }
-      const extraDiceCount = Math.max(0, values.length - diceCount)
-      const extraDiceLabel = extraDiceCount > 0 ? `+${extraDiceCount}d6` : ''
-      const featureDiceLabel =
-        featureExtraLabelParts.length > 0 ? `+${featureExtraLabelParts.join('+')}` : ''
-      const diceLabel = `${diceCount}d${damageSides}${extraDiceLabel}${featureDiceLabel}${skill.damageBonus ? `+${skill.damageBonus}` : ''}`
+      const diceLabel = `${diceCount}d${damageSides}${skill.damageBonus ? `+${skill.damageBonus}` : ''}`
       rollLabel = `${skill.name}${doubleArrow ? '（双箭）' : ''}${forceCrit ? '（精准打击）' : ''} ${diceLabel}${isCrit ? ' 重击' : ''}`
     }
 
@@ -2567,9 +3014,13 @@ export default function MapsPage() {
     let stunSaveLabel = ''
     let damageBonusForRoll = skill.damageBonus
     let damageBeforeDefense = total
+    let damageAfterDefense = total
     let attackDefenseDiff: number | null = null
     let attackDefenseModifier = 0
     let appliedDamageAmount = 0
+    let pendingDexSave:
+      | { mode: 'half' | 'none' | 'fail-half'; success: boolean }
+      | null = null
 
     if (hit) {
       const dexMode = dexSaveDamageMode(skill.skillTreeId)
@@ -2578,15 +3029,13 @@ export default function MapsPage() {
           disadvantage: skill.knockbackSaveDisadvantage,
         })
         dexSaveLabel = formatSkillDexSaveLabel(save, dexMode)
-        if (dexMode === 'fail-half' && !save.success) {
-          total = Math.floor(total / 2)
-        } else if (save.success && dexMode !== 'fail-half') {
-          total = dexMode === 'half' ? Math.floor(total / 2) : 0
-        } else if (
+        pendingDexSave = { mode: dexMode, success: save.success }
+        if (
+          !save.success &&
           skill.skillTreeId === 'whirlwindKick' &&
           skillGrantsKnockbackOnHit(caster, skill)
         ) {
-          applyKnockbackFromSave(token.id, token.characterId, caster, casterId, save)
+          await applyKnockbackFromSave(token.id, token.characterId, caster, casterId, save)
         }
       }
       if (caster && casterToken && skill.skillTreeId === 'clusterShot') {
@@ -2677,9 +3126,17 @@ export default function MapsPage() {
                 (token.vulnerableTurns ?? 0) > 0, // [T4/C3]
               )
             : adjustDamageAgainstToken(total, attackerInput, token, damageType)
-        const finalDamage = adjustedDamage.damage
+        let finalDamage = adjustedDamage.damage
         attackDefenseDiff = adjustedDamage.diff
         attackDefenseModifier = adjustedDamage.modifier
+        damageAfterDefense = finalDamage
+        if (pendingDexSave) {
+          if (pendingDexSave.mode === 'fail-half' && !pendingDexSave.success) {
+            finalDamage = Math.floor(finalDamage / 2)
+          } else if (pendingDexSave.success && pendingDexSave.mode !== 'fail-half') {
+            finalDamage = pendingDexSave.mode === 'half' ? Math.floor(finalDamage / 2) : 0
+          }
+        }
         damageBonusForRoll = finalDamage - values.reduce((a, b) => a + b, 0)
         total = finalDamage
         appliedDamageAmount = finalDamage
@@ -2696,6 +3153,9 @@ export default function MapsPage() {
         } else if (token.maxHp != null) {
           tokenPatch.hp = Math.max(0, (token.hp ?? token.maxHp) - finalDamage)
           if (tokenPatch.hp <= 0) deferDeathHandling(token.id)
+        }
+        if ((token.illusionDanceTurns ?? 0) > 0) {
+          tokenPatch.illusionDanceTurns = 0
         }
       }
       if (resolutionSession) {
@@ -2736,7 +3196,17 @@ export default function MapsPage() {
         const hitKey = `${caster.id}:${token.id}`
         const hits = (multiStrikeHitsRef.current[hitKey] ?? 0) + 1
         multiStrikeHitsRef.current[hitKey] = hits
-        if (hits >= 3 && (caster.qi ?? 0) >= 1 && window.confirm(`多重打击：${token.label} 本回合已受到 ${hits} 段攻击。消耗 1 点气使其体质劣势豁免，失败眩晕？`)) {
+        const useMultiStrike =
+          hits >= 3 &&
+          (caster.qi ?? 0) >= 1 &&
+          (await showCombatDialog({
+            title: '多重打击',
+            message: `${token.label} 本回合已受到 ${hits} 段攻击。\n是否消耗 1 点气，使其进行一次具有劣势的体质豁免，失败则眩晕 1 回合？`,
+            confirmText: '发动',
+            cancelText: '暂不发动',
+            tone: 'violet',
+          }))
+        if (useMultiStrike) {
           if (spendQi(caster.id, 1)) {
             const save = await resolveAnimatedConSave(caster, token, targetChar, '多重打击体质豁免', {
               disadvantage: true,
@@ -2792,7 +3262,15 @@ export default function MapsPage() {
           selfCooldownReduction = Math.max(selfCooldownReduction, 1)
           featureExtraLabelParts.push('目标击飞，踏风连踢 CD -1')
         }
-        if (confirm(`踏风连踢：是否推动 ${token.label} 5 尺？`)) {
+        if (
+          await showCombatDialog({
+            title: '踏风连踢',
+            message: `是否推动 ${token.label} 5 尺？`,
+            confirmText: '推动',
+            cancelText: '不推动',
+            tone: 'sky',
+          })
+        ) {
           const tc = pixelToCell(token.x, token.y, activeMap)
           const cc = pixelToCell(casterToken.x, casterToken.y, activeMap)
           moveTokenByCells(token, tc.col - cc.col, tc.row - cc.row, 1)
@@ -2877,7 +3355,15 @@ export default function MapsPage() {
           !!tokenPatch.vulnerableTurns ||
           !!tokenPatch.noMoveTurns
         if (appliedStatus) {
-          if (window.confirm('迅捷回溯：获得 1 枚通用令牌。确定用于技能 CD -1，取消则回复 1 AP。')) {
+          if (
+            await showCombatDialog({
+              title: '迅捷回溯',
+              message: '获得 1 枚通用令牌。是否用于一个技能 CD -1？\n取消则回复 1 AP。',
+              confirmText: 'CD -1',
+              cancelText: '回复 1 AP',
+              tone: 'violet',
+            })
+          ) {
             chooseCooldownSkillToReduce(caster, 1, '迅捷回溯')
           } else {
             const latest = useCharacterStore.getState().characters.find((c) => c.id === caster.id)
@@ -2994,10 +3480,7 @@ export default function MapsPage() {
       pushApLog(caster, waiveAp ? 0 : skill.apCost, `使用 ${skill.name}`, `目标 ${token.label}`)
       applySkillCooldownReduction(casterId, skill.id, selfCooldownReduction)
       if (waiveAp && caster?.combatBuffs?.galeComboReady) {
-        useClassFeature(casterId, 'galeCombo')
-        updateChar(casterId, {
-          combatBuffs: { ...caster.combatBuffs, galeComboReady: undefined },
-        })
+        consumeGaleComboReady(casterId, skill.name)
       }
       if (caster && isBasicShot(skill) && caster.combatBuffs?.doubleArrowReady) {
         updateChar(casterId, {
@@ -3021,9 +3504,13 @@ export default function MapsPage() {
       attackDefenseDiff != null
         ? `，攻防修正 ${attackDefenseModifier >= 0 ? '+' : '-'}${Math.abs(attackDefenseModifier)}（差值${attackDefenseDiff}）`
         : ''
+    const dexSaveFormula =
+      pendingDexSave && damageAfterDefense !== total
+        ? `，豁免后${total}`
+        : ''
     const damageFormula =
       hit && values.length > 0
-        ? `骰值 ${diceFormula}${fixedFormula}${critFormulaLabel}${beforeDefenseFormula}${attackDefenseFormula}，最终 ${total}`
+        ? `骰值 ${diceFormula}${fixedFormula}${critFormulaLabel}${beforeDefenseFormula}${attackDefenseFormula}${dexSaveFormula}，最终 ${total}`
         : undefined
     if (!opts?.silent) {
       const rollForDisplay: DiceRoll = {
@@ -3059,7 +3546,105 @@ export default function MapsPage() {
       d20Roll,
       knockbackPending,
       selfCooldownReduction,
+      damageBeforeDefense,
+      damageAfterDefense,
+      attackDefenseDiff,
+      attackDefenseModifier,
     }
+  }
+
+  const resolveArrowSequenceAttack = async (
+    caster: Character,
+    skill: CombatSkill,
+    targets: Token[],
+    opts?: { waiveAp?: boolean },
+  ) => {
+    if (!activeMap || targets.length === 0) return []
+    const waiveAp = !!opts?.waiveAp
+    const perArrowSkill: CombatSkill = { ...skill, arrowShots: 1 }
+    const perArrowDiceCount = Math.max(1, attackDamageDiceCount(perArrowSkill, false))
+    const damageSides = isBasicShot(perArrowSkill) ? 8 : perArrowSkill.damageSides
+    useSkillStore(caster.id, skill.id, waiveAp ? { waiveAp: true } : undefined)
+    pushApLog(caster, waiveAp ? 0 : skill.apCost, `使用 ${skill.name}`, `${targets.length} 支箭`)
+    if (waiveAp && caster.combatBuffs?.galeComboReady) {
+      consumeGaleComboReady(caster.id, skill.name)
+    }
+    const allBaseValues = await rollDiceBoxValues(
+      perArrowDiceCount * targets.length,
+      damageSides,
+      `${skill.name} 伤害`,
+      targets[0]?.label ?? skill.name,
+    )
+
+    const results: AttackResolveResult[] = []
+    const knockbackQueue: KnockbackPending[] = []
+    let selfCooldownReduction = 0
+    for (const [index, target] of targets.entries()) {
+      const start = index * perArrowDiceCount
+      const arrowValues = allBaseValues.slice(start, start + perArrowDiceCount)
+      const latestMap = useMapStore.getState().maps.find((map) => map.id === activeMap.id) ?? activeMap
+      const latestTarget = latestMap.tokens.find((token) => token.id === target.id) ?? target
+      const result = await resolveAttack(latestTarget, {
+        skipCleanup: true,
+        skipUseSkill: true,
+        silent: true,
+        skillOverride: perArrowSkill,
+        targetingOverride: {
+          casterId: caster.id,
+          skill: perArrowSkill,
+          waiveAp: waiveAp || undefined,
+        },
+        presetDamageValues: arrowValues,
+        appendFeatureDamageToPreset: true,
+      })
+      if (result) {
+        results.push(result)
+        selfCooldownReduction = Math.max(selfCooldownReduction, result.selfCooldownReduction ?? 0)
+        if (result.knockbackPending) knockbackQueue.push(result.knockbackPending)
+      }
+    }
+
+    if (selfCooldownReduction > 0) {
+      applySkillCooldownReduction(caster.id, skill.id, selfCooldownReduction)
+    }
+    if (knockbackQueue.length > 0) scheduleKnockbackRolls(knockbackQueue)
+
+    const totalDamage = results.reduce((sum, result) => sum + result.total, 0)
+    const hitCount = results.filter((result) => result.hit).length
+    const signed = (value: number) => `${value >= 0 ? '+' : ''}${value}`
+    const summary = targets
+      .map((target, index) => {
+        const result = results[index]
+        if (!result) return `第${index + 1}支→${target.label}：未结算`
+        if (!result.hit) return `第${index + 1}支→${target.label}：未造成伤害（${result.rollLabel}）`
+        const diceValues = result.values.length > 0 ? result.values : allBaseValues.slice(index * perArrowDiceCount, (index + 1) * perArrowDiceCount)
+        const diceTotal = diceValues.reduce((sum, value) => sum + value, 0)
+        const beforeDefense = result.damageBeforeDefense ?? result.total
+        const preDefenseBonus = beforeDefense - diceTotal
+        const defenseText =
+          result.attackDefenseDiff != null
+            ? `，攻防修正${signed(result.attackDefenseModifier ?? 0)}（差值${result.attackDefenseDiff}）`
+            : ''
+        const postDefenseDelta = result.total - (result.damageAfterDefense ?? result.total)
+        const postDefenseText = postDefenseDelta !== 0 ? `，豁免/减免${signed(postDefenseDelta)}` : ''
+        return `第${index + 1}支→${target.label}：骰 ${diceValues.join(' + ')}，加值${signed(preDefenseBonus)}${defenseText}${postDefenseText}，最终 ${result.total} 点`
+      })
+      .join('；')
+    const resolvedValues = results.flatMap((result) => result.values)
+    const displayValues = resolvedValues.length > 0 ? resolvedValues : allBaseValues
+    const rollForDisplay: DiceRoll = {
+      values: displayValues,
+      sides: damageSides,
+      bonus: totalDamage - displayValues.reduce((sum, value) => sum + value, 0),
+      total: totalDamage,
+      label: `${skill.name} · ${targets.length}支箭 · 命中${hitCount}`,
+      formula: `${summary}；合计 ${totalDamage} 点`,
+      targetName: targets[0]?.label ?? skill.name,
+    }
+    setRoll(rollForDisplay)
+    publishSharedDiceRoll(rollForDisplay)
+    pushCombatLog(`${caster.name} 使用 ${skill.name}：${summary}，合计 ${totalDamage} 点。`, totalDamage > 0 ? 'damage' : 'attack')
+    return results
   }
 
   const resolveAoeAttack = async (
@@ -3087,12 +3672,14 @@ export default function MapsPage() {
     const anchorCell =
       aoe.shape === 'circle' && aoe.origin === 'self' ? casterCell : clickedCell
     if (!canPlaceAoe(aoe, casterCell, anchorCell)) {
-      alert(
+      await showCombatNotice(
+        '超出施法距离',
         aoe.shape === 'line'
-          ? '瞄准点超出施法距离'
+          ? '瞄准点超出施法距离。'
           : aoe.shape === 'rect'
-            ? '矩形中心超出施法距离'
-            : '圆心超出施法距离',
+            ? '矩形中心超出施法距离。'
+            : '圆心超出施法距离。',
+        'amber',
       )
       return
     }
@@ -3221,6 +3808,11 @@ export default function MapsPage() {
         combinedTotal += result.total
         selfCooldownReduction = Math.max(selfCooldownReduction, result.selfCooldownReduction ?? 0)
         const [, ...effectLabels] = result.rollLabel.split(' · ')
+        if (result.attackDefenseDiff != null) {
+          effectLabels.unshift(
+            `攻防修正${(result.attackDefenseModifier ?? 0) >= 0 ? '+' : ''}${result.attackDefenseModifier ?? 0}（差值${result.attackDefenseDiff}）`,
+          )
+        }
         hitLines.push(
           `${token.label} ${result.total}${effectLabels.length > 0 ? `（${effectLabels.join(' · ')}）` : ''}`,
         )
@@ -3256,26 +3848,25 @@ export default function MapsPage() {
     pushApLog(caster, waiveAp ? 0 : skill.apCost, `释放 ${skill.name}`, `${targets.length} 名目标，覆盖 ${cells.length} 格`)
     applySkillCooldownReduction(casterId, skill.id, selfCooldownReduction)
     if (waiveAp && caster?.combatBuffs?.galeComboReady) {
-      useClassFeature(casterId, 'galeCombo')
-      updateChar(casterId, {
-        combatBuffs: { ...caster.combatBuffs, galeComboReady: undefined },
-      })
+      consumeGaleComboReady(casterId, skill.name)
     }
 
     const cellCount = cells.length
+    const sharedRollSum = combinedValues.reduce((sum, value) => sum + value, 0)
+    const sharedRollTotal = sharedRollSum + skill.damageBonus
     setRoll({
       values: anyHit ? combinedValues : [],
       sides: isBasicShot(skill) ? 8 : skill.damageSides,
-      bonus: combinedTotal - combinedValues.reduce((sum, value) => sum + value, 0),
-      total: combinedTotal,
+      bonus: skill.damageBonus,
+      total: anyHit ? sharedRollTotal : 0,
       label: `${skill.name} · ${cellCount} 格 · ${targets.length} 名在范围内${anyHit ? '' : '（无命中）'}`,
       formula: anyHit
-        ? `${combinedValues.join(' + ')}${combinedTotal - combinedValues.reduce((sum, value) => sum + value, 0) >= 0 ? ' + ' : ' - '}${Math.abs(combinedTotal - combinedValues.reduce((sum, value) => sum + value, 0))} = ${combinedTotal}`
+        ? `${combinedValues.join(' + ')}${skill.damageBonus ? ` + ${skill.damageBonus}` : ''} = ${sharedRollTotal}`
         : undefined,
       targetName: hitLines.length > 0 ? hitLines.join('；') : '—',
     })
     pushCombatLog(
-      `${caster.name} 结算 ${skill.name}：覆盖 ${cells.length} 格，${targets.length} 名目标在范围内。伤害骰 ${combinedValues.length > 0 ? combinedValues.join(' + ') : '无'}，加值/修正 ${combinedTotal - combinedValues.reduce((sum, value) => sum + value, 0)}，合计 ${combinedTotal}。${hitLines.length > 0 ? `逐个目标：${hitLines.join('；')}` : '无目标受击'}`,
+      `${caster.name} 结算 ${skill.name}：覆盖 ${cells.length} 格，${targets.length} 名目标在范围内。伤害骰 ${combinedValues.length > 0 ? combinedValues.join(' + ') : '无'}${skill.damageBonus ? `，技能加值 ${skill.damageBonus}` : ''}，豁免前基础 ${sharedRollTotal}。${hitLines.length > 0 ? `逐个目标：${hitLines.join('；')}` : '无目标受击'}`,
       anyHit ? 'damage' : 'attack',
     )
     if (knockbackQueue.length > 0) {
@@ -3353,15 +3944,19 @@ export default function MapsPage() {
 
   const handleActivateFeature = async (key: ClassFeatureKey) => {
     if (!canControlPlayerTurn || !turnCharacter) return
-    if (!isDM && key === 'preciseStrike') {
+    if (!isDM && shouldSendPlayerReadyFeatureToDm(key)) {
       sendPlayerActivateFeatureRequest(key)
+      return
+    }
+    if (key === 'illusionDance') {
+      beginIllusionDanceTargeting(turnCharacter)
       return
     }
     if (key === 'eagleEye') {
       const currentTrait = findClassTrait(turnCharacter, 'eagleEye')
       if (!currentTrait || currentTrait.uses <= 0) return
       if (!spendAP(turnCharacter.id, 1)) {
-        alert('行动点不足（需要 1 AP）')
+        await showCombatNotice('行动点不足', '需要 1 AP。', 'amber')
         return
       }
       pushApLog(turnCharacter, 1, '激活鹰眼')
@@ -3370,8 +3965,10 @@ export default function MapsPage() {
         const updated = useCharacterStore.getState().characters.find((c) => c.id === turnCharacter.id)
         const trait = updated && findClassTrait(updated, 'eagleEye')
         if (trait) {
-          alert(
+          await showCombatNotice(
+            '鹰眼',
             `鹰眼已激活：3 回合内敏捷 +${eagleEyeDexBonus(trait.level)}（调整值 +${Math.floor(eagleEyeDexBonus(trait.level) / 2)}）（剩余 ${trait.uses}/${trait.maxUses} 次/长休）`,
+            'sky',
           )
         }
       }
@@ -3379,12 +3976,12 @@ export default function MapsPage() {
     }
     if (key === 'doubleArrow') {
       if (!canArmDoubleArrow(turnCharacter)) {
-        alert('双箭本场次数已用完')
+        await showCombatNotice('双箭', '本场次数已用完。', 'amber')
         return
       }
       const ready = !turnCharacter.combatBuffs?.doubleArrowReady
       if (ready && !spendAP(turnCharacter.id, 1)) {
-        alert('行动点不足（需要 1 AP）')
+        await showCombatNotice('行动点不足', '需要 1 AP。', 'amber')
         return
       }
       if (ready) pushApLog(turnCharacter, 1, '激活双箭')
@@ -3396,24 +3993,26 @@ export default function MapsPage() {
       })
       const trait = findClassTrait(turnCharacter, 'doubleArrow')
       if (ready) {
-        alert(
+        await showCombatNotice(
+          '双箭',
           `双箭已就绪：下次单箭射击将改为 2 支箭矢\n剩余 ${trait?.uses ?? 0} / ${trait?.maxUses ?? 0} 次`,
+          'sky',
         )
       } else {
-        alert('已取消双箭')
+        await showCombatNotice('双箭', '已取消双箭。', 'sky')
       }
       return
     }
     if (key === 'preciseStrike') {
       const trait = findClassTrait(turnCharacter, 'preciseStrike')
       if (!trait || trait.uses <= 0) {
-        alert('精准打击本场次数已用完')
+        await showCombatNotice('精准打击', '本场次数已用完。', 'amber')
         return
       }
       const ready = !turnCharacter.combatBuffs?.preciseStrikeReady
       if (ready) {
         if (turnCharacter.currentAP < 1) {
-          alert('行动点不足（需要 1 AP）')
+          await showCombatNotice('行动点不足', '需要 1 AP。', 'amber')
           return
         }
         updateChar(turnCharacter.id, {
@@ -3421,12 +4020,12 @@ export default function MapsPage() {
           combatBuffs: { ...turnCharacter.combatBuffs, preciseStrikeReady: true },
         })
         pushApLog(turnCharacter, 1, '准备精准打击')
-        alert('精准打击已就绪：下一次攻击必定重击')
+        await showCombatNotice('精准打击', '已就绪：下一次攻击必定重击。', 'sky')
       } else {
         updateChar(turnCharacter.id, {
           combatBuffs: { ...turnCharacter.combatBuffs, preciseStrikeReady: undefined },
         })
-        alert('已取消精准打击')
+        await showCombatNotice('精准打击', '已取消精准打击。', 'sky')
       }
       return
     }
@@ -3461,7 +4060,7 @@ export default function MapsPage() {
       const trait = findClassTrait(turnCharacter, 'stillWater')
       if (!trait) return
       if (!isCalmMindActive(turnCharacter)) {
-        alert('心如止水需要处于静心状态时激活')
+        await showCombatNotice('心如止水', '需要处于静心状态时激活。', 'amber')
         return
       }
       if (!spendAP(turnCharacter.id, 1)) return
@@ -3510,38 +4109,12 @@ export default function MapsPage() {
       })
       return
     }
-    if (key === 'illusionDance') {
-      const trait = findClassTrait(turnCharacter, 'illusionDance')
-      if (!trait || trait.uses <= 0) return
-      if (!spendAP(turnCharacter.id, 1)) return
-      if (!spendQi(turnCharacter.id, 1)) {
-        alert('气不足（需要 1 点气）')
-        return
-      }
-      const target = chooseEnemyTokenByPrompt('迷幻舞步：选择一个可见敌人进行感知豁免')
-      if (!target || !activeMap || !myPlayerToken) return
-      useClassFeature(turnCharacter.id, 'illusionDance')
-      const save = await resolveAbilitySave(turnCharacter, target, target.characterId ? characters.find((c) => c.id === target.characterId) : undefined, 'wis', '迷幻舞步感知豁免')
-      if (!save.success) {
-        const casterCell = pixelToCell(myPlayerToken.x, myPlayerToken.y, activeMap)
-        const targetCell = pixelToCell(target.x, target.y, activeMap)
-        const dx = Math.sign(targetCell.col - casterCell.col)
-        const dy = Math.sign(targetCell.row - casterCell.row)
-        updateToken(activeMap.id, target.id, {
-          ...cellToPixel({ col: casterCell.col + dx * 2, row: casterCell.row + dy * 2 }, activeMap),
-          noMoveTurns: 1,
-        })
-        addConditionToCharacter(target.characterId, NO_MOVE_STATUS_LABEL)
-      }
-      pushApLog(turnCharacter, 1, '激活迷幻舞步', abilitySaveLabel('感知豁免', save, '成功', '失败，被拉近且不能移动'))
-      return
-    }
     if (key === 'flexibleBody') {
       const trait = findClassTrait(turnCharacter, 'flexibleBody')
       if (!trait) return
       if (!spendAP(turnCharacter.id, 1)) return
       if (!spendQi(turnCharacter.id, 1)) {
-        alert('气不足（需要 1 点气）')
+        await showCombatNotice('气不足', '需要 1 点气。', 'amber')
         return
       }
       const bonus = 5 + (trait.level - 1) * 2
@@ -3610,10 +4183,15 @@ export default function MapsPage() {
     }
     const targetName = targetChar?.name ?? targetToken.label
     const attackerName = attacker?.name ?? attackerToken.label
-    if (attacker &&
-      !confirm(
-        `${attackerName} 对 ${targetName} 触发借机攻击？\n消耗 1 AP，进行一次近战命中判定。`,
-      )
+    if (
+      attacker &&
+      !(await showCombatDialog({
+        title: '借机攻击',
+        message: `${attackerName} 对 ${targetName} 触发借机攻击。\n是否消耗 1 AP，进行一次近战命中判定？`,
+        confirmText: '攻击',
+        cancelText: '放过',
+        tone: 'amber',
+      }))
     ) {
       return
     }
@@ -3711,11 +4289,12 @@ export default function MapsPage() {
 
   const handleMoveSelect = async (point: { x: number; y: number }) => {
     if (!activeMap || targeting?.aoe) return
+    if (!isDM && (!combatActive || playerCombatLocked)) return
 
     if (agileLeapChar && agileLeapToken && agileLeapCircle) {
       const feet = agileLeapChar.combatBuffs!.agileLeapMoveFeet!
       const center = { x: agileLeapCircle.centerX, y: agileLeapCircle.centerY }
-      const pos = snapToCellCenter(point.x, point.y, activeMap)
+      const pos = snapTokenToGridCenter(point.x, point.y, agileLeapToken, activeMap)
       if (!isWithinMovementRange(center, pos, feet, activeMap)) return
       updateToken(activeMap.id, agileLeapToken.id, pos)
       useClassFeature(agileLeapChar.id, 'agileLeap')
@@ -3729,7 +4308,7 @@ export default function MapsPage() {
     if (turnCharacter && myPlayerToken && calmSpiritMoveCircle) {
       const feet = turnCharacter.combatBuffs?.calmSpiritMoveFeet ?? 0
       const center = { x: calmSpiritMoveCircle.centerX, y: calmSpiritMoveCircle.centerY }
-      const pos = snapToCellCenter(point.x, point.y, activeMap)
+      const pos = snapTokenToGridCenter(point.x, point.y, myPlayerToken, activeMap)
       if (!isWithinMovementRange(center, pos, feet, activeMap)) return
       updateToken(activeMap.id, myPlayerToken.id, pos)
       pushApLog(turnCharacter, 0, '安定心神移动', `移动至多 ${feet} 尺`)
@@ -3743,7 +4322,7 @@ export default function MapsPage() {
     if (turnCharacter && myPlayerToken && freeMoveCircle) {
       const feet = turnCharacter.combatBuffs?.freeMoveFeet ?? 0
       const center = { x: freeMoveCircle.centerX, y: freeMoveCircle.centerY }
-      const pos = snapToCellCenter(point.x, point.y, activeMap)
+      const pos = snapTokenToGridCenter(point.x, point.y, myPlayerToken, activeMap)
       if (!isWithinMovementRange(center, pos, feet, activeMap)) return
       await resolveOpportunityAttacksForMove(myPlayerToken, pos, turnCharacter)
       const latestMover = useCharacterStore.getState().characters.find((c) => c.id === turnCharacter.id)
@@ -3759,19 +4338,23 @@ export default function MapsPage() {
 
     if (!myPlayerToken || !turnCharacter || !showMoveRange || !moveCircle) return
     if (isMovementLocked(turnCharacter.conditions)) {
-      alert('该角色本回合无法移动') // [T4/C4/C8] no-move OR restrained
+      void showCombatNotice('无法移动', '该角色本回合无法移动。', 'amber') // [T4/C4/C8] no-move OR restrained
       return
     }
     const center = { x: moveCircle.centerX, y: moveCircle.centerY }
     const moveFeet = turnCharacter.speed
-    const pos = snapToCellCenter(point.x, point.y, activeMap)
+    const pos = snapTokenToGridCenter(point.x, point.y, myPlayerToken, activeMap)
     if (!isWithinMovementRange(center, pos, moveFeet, activeMap)) return
     const fromCell = pixelToCell(myPlayerToken.x, myPlayerToken.y, activeMap)
     const toCell = pixelToCell(pos.x, pos.y, activeMap)
     const movedFeet = cellDistance(fromCell, toCell) * 5
     if (!isDM) {
       if (!sendPlayerMoveRequest(pos, movedFeet)) {
-        alert(pendingPlayerActionRef.current ? '正在等待 DM 确认上一动作' : '行动点不足（需要 1 AP）')
+        void showCombatNotice(
+          pendingPlayerActionRef.current ? '等待 DM 确认' : '行动点不足',
+          pendingPlayerActionRef.current ? '正在等待 DM 确认上一动作。' : '需要 1 AP。',
+          'amber',
+        )
       }
       setShowMoveRange(false)
       return
@@ -3790,7 +4373,7 @@ export default function MapsPage() {
     if (!canControlPlayerTurn || !turnCharacter) return
     if (disengagedCharIds.has(turnCharacter.id)) return
     if (!spendAP(turnCharacter.id, 2)) {
-      alert('行动点不足（撤离需 2 AP）')
+      void showCombatNotice('行动点不足', '撤离需要 2 AP。', 'amber')
       return
     }
     pushApLog(turnCharacter, 2, '撤离', '本回合移动不触发借机攻击')
@@ -3803,7 +4386,7 @@ export default function MapsPage() {
     if (!latest || !findClassTrait(latest, 'calmSpirit')) return null
     const stacks = latest.combatBuffs?.calmSpiritStacks ?? 0
     if (stacks < amount) {
-      alert(`静心标记不足（需要 ${amount} 枚）`)
+      void showCombatNotice('静心标记不足', `需要 ${amount} 枚静心标记。`, 'amber')
       return null
     }
     updateChar(latest.id, {
@@ -3849,7 +4432,7 @@ export default function MapsPage() {
     if (!ch) return
     const skills = ch.combatSkills.filter((s) => s.remaining > 0)
     if (skills.length === 0) {
-      alert('没有正在冷却的技能')
+      void showCombatNotice('安定心神', '没有正在冷却的技能。', 'amber')
       return
     }
     const picked = window.prompt(
@@ -3885,13 +4468,16 @@ export default function MapsPage() {
       },
     })
     pushCombatLog(`${ch.name} 发动安定心神：获得一个完整回合，AP 回满为 ${latest.actionPoints}/${latest.actionPoints}`, 'turn')
-    alert('安定心神：已获得一个完整回合（AP 回满，技能本回合使用限制重置）')
+    void showCombatNotice('安定心神', '已获得一个完整回合：AP 回满，技能本回合使用限制重置。', 'sky')
   }
 
   const handleUseSkill = (skill: CombatSkill) => {
     if (!activeChar) return
+    if (!isDM && (!combatActive || playerCombatLocked || !canControlPlayerTurn || activeChar.id !== turnCharacter?.id)) {
+      return
+    }
     if (skill.skillTreeId === 'riseKick' && !activeChar.conditions.includes('倒地')) {
-      alert('起身踢只能在倒地时使用')
+      void showCombatNotice('起身踢', '只能在倒地时使用。', 'amber')
       return
     }
     const waiveAp = !!activeChar.combatBuffs?.galeComboReady
@@ -3900,6 +4486,7 @@ export default function MapsPage() {
         canUseDoubleArrow(activeChar, skill) && !!activeChar.combatBuffs?.doubleArrowReady
       const aoe = getSkillAoeTargeting(skill)
       setShowMoveRange(false)
+      setFeatureTargeting(null)
       setAoePreviewCell(null)
       setTargeting({
         casterId: activeChar.id,
@@ -3909,17 +4496,11 @@ export default function MapsPage() {
         waiveAp: waiveAp || undefined,
       })
       setAoeRectRotation(0)
-      if (waiveAp) {
-        alert('疾风连击已就绪：本次技能释放无需消耗 AP')
-      }
     } else {
       useSkillStore(activeChar.id, skill.id, waiveAp ? { waiveAp: true } : undefined)
       pushApLog(activeChar, waiveAp ? 0 : skill.apCost, `使用 ${skill.name}`)
       if (waiveAp) {
-        useClassFeature(activeChar.id, 'galeCombo')
-        updateChar(activeChar.id, {
-          combatBuffs: { ...activeChar.combatBuffs, galeComboReady: undefined },
-        })
+        consumeGaleComboReady(activeChar.id, skill.name)
       }
     }
   }
@@ -3941,12 +4522,18 @@ export default function MapsPage() {
     }
     if (isSelfOriginCircleAoe(targeting.aoe)) {
       if (requestPlayerAoe(aoeCasterCell)) return
-      void resolveAoeAttack(aoeCasterCell)
+      void resolveAoeAttack(aoeCasterCell).finally(() => {
+        setTargeting(null)
+        setAoePreviewCell(null)
+      })
       return
     }
     if (!aoeHighlight?.valid) return
     if (requestPlayerAoe(cell)) return
-    void resolveAoeAttack(cell)
+    void resolveAoeAttack(cell).finally(() => {
+      setTargeting(null)
+      setAoePreviewCell(null)
+    })
   }
 
   const handleSelectToken = (tokenId: string | null) => {
@@ -3955,14 +4542,24 @@ export default function MapsPage() {
       setSelectedCharacterTokenId(null)
       return
     }
+    if (playerCombatLocked) return
 
     // 范围技能确认优先于移动
+    if (featureTargeting && handleFeatureTargetTokenClick(tokenId)) {
+      return
+    }
+
     if (targeting?.aoe && activeMap && aoeCasterCell) {
       const clickedToken = activeMap.tokens.find((t) => t.id === tokenId)
       const clickedCell = clickedToken ? pixelToCell(clickedToken.x, clickedToken.y, activeMap) : null
       if (isSelfOriginCircleAoe(targeting.aoe)) {
-        const casterToken = activeMap.tokens.find((t) => t.characterId === targeting.casterId)
-        if (casterToken && tokenId === casterToken.id) {
+        const casterToken =
+          activeMap.tokens.find((t) => t.characterId === targeting.casterId) ??
+          activeMap.tokens.find((t) => t.id === currentInitiativeToken?.id) ??
+          (myPlayerToken?.characterId === targeting.casterId ? myPlayerToken : undefined)
+        const clickedCasterCell =
+          clickedCell && clickedCell.col === aoeCasterCell.col && clickedCell.row === aoeCasterCell.row
+        if ((casterToken && tokenId === casterToken.id) || clickedCasterCell) {
           if (!isDM) {
             if (sendPlayerAoeAttackRequest(aoeCasterCell)) {
               setTargeting(null)
@@ -3970,7 +4567,10 @@ export default function MapsPage() {
             }
             return
           }
-          resolveAoeAttack(aoeCasterCell)
+          void resolveAoeAttack(aoeCasterCell).finally(() => {
+            setTargeting(null)
+            setAoePreviewCell(null)
+          })
           return
         }
         return
@@ -3983,7 +4583,10 @@ export default function MapsPage() {
           }
           return
         }
-        void resolveAoeAttack(clickedCell)
+        void resolveAoeAttack(clickedCell).finally(() => {
+          setTargeting(null)
+          setAoePreviewCell(null)
+        })
         return
       }
       setSelectedTokenId(tokenId)
@@ -3991,9 +4594,10 @@ export default function MapsPage() {
     }
 
     if (canControlPlayerTurn && tokenId === myPlayerToken?.id) {
-      setActiveCharId(turnCharacter!.id)
+      if (isDM) setActiveCharId(turnCharacter!.id)
       setShowMoveRange((v) => !v)
-      setSelectedTokenId(tokenId)
+      setSelectedTokenId(isDM ? tokenId : null)
+      if (!isDM) setSelectedCharacterTokenId(null)
       return
     }
     // 单体技能：点到 token 即结算
@@ -4005,7 +4609,7 @@ export default function MapsPage() {
           const targetCell = pixelToCell(tok.x, tok.y, activeMap)
           const inRange = new Set(rangedRangeCells.map(cellKey)).has(cellKey(targetCell))
           if (!inRange) {
-            alert(`目标超出射程（${rangeFeet} 尺）`)
+            void showCombatNotice('目标超出射程', `射程为 ${rangeFeet} 尺。`, 'amber')
             return
           }
         }
@@ -4021,10 +4625,10 @@ export default function MapsPage() {
         }
         if (!isDM) {
           let targetTokenIds: string[] | undefined
-          if (
-            activeMap &&
-            (targeting.skill.skillTreeId === 'multiShot' || targeting.skill.skillTreeId === 'rageShot')
-          ) {
+          if (activeMap && targeting.skill.skillTreeId === 'multiShot') {
+            const shots = Math.max(1, targeting.skill.arrowShots ?? 1)
+            targetTokenIds = Array.from({ length: shots }, () => tok.id)
+          } else if (activeMap && targeting.skill.skillTreeId === 'rageShot') {
             const shots = Math.max(1, targeting.skill.arrowShots ?? 1)
             const selectedTargets: Token[] = [tok]
             const candidates = activeMap.tokens.filter((t) => {
@@ -4054,11 +4658,33 @@ export default function MapsPage() {
           }
           return
         }
-        if (targeting.skill.skillTreeId === 'multiShot' || targeting.skill.skillTreeId === 'rageShot') {
+        if (targeting.skill.skillTreeId === 'multiShot') {
           const caster = characters.find((c) => c.id === targeting.casterId)
           if (caster && activeMap) {
             const shots = Math.max(1, targeting.skill.arrowShots ?? 1)
-            const perArrowSkill: CombatSkill = { ...targeting.skill, arrowShots: 1 }
+            const selectedTargets = Array.from({ length: shots }, () => tok)
+            const waiveAp = !!targeting.waiveAp
+            if (!waiveAp && caster.currentAP < targeting.skill.apCost) {
+              void showCombatNotice('行动点不足', `需要 ${targeting.skill.apCost} AP。`, 'amber')
+              releaseSkillTarget()
+              return
+            }
+            void (async () => {
+              try {
+                await resolveArrowSequenceAttack(caster, targeting.skill, selectedTargets, { waiveAp })
+                setTargeting(null)
+                setAoePreviewCell(null)
+              } finally {
+                releaseSkillTarget()
+              }
+            })()
+            return
+          }
+        }
+        if (targeting.skill.skillTreeId === 'rageShot') {
+          const caster = characters.find((c) => c.id === targeting.casterId)
+          if (caster && activeMap) {
+            const shots = Math.max(1, targeting.skill.arrowShots ?? 1)
             const selectedTargets: Token[] = [tok]
             const candidates = activeMap.tokens.filter((t) => {
               if (t.characterId === targeting.casterId) return false
@@ -4078,34 +4704,13 @@ export default function MapsPage() {
             }
             const waiveAp = !!targeting.waiveAp
             if (!waiveAp && caster.currentAP < targeting.skill.apCost) {
-              alert(`行动点不足（需要 ${targeting.skill.apCost} AP）`)
+              void showCombatNotice('行动点不足', `需要 ${targeting.skill.apCost} AP。`, 'amber')
               releaseSkillTarget()
               return
             }
             void (async () => {
               try {
-                useSkillStore(caster.id, targeting.skill.id, waiveAp ? { waiveAp: true } : undefined)
-                pushApLog(caster, waiveAp ? 0 : targeting.skill.apCost, `使用 ${targeting.skill.name}`, `${selectedTargets.length} 支箭`)
-                if (waiveAp && caster.combatBuffs?.galeComboReady) {
-                  useClassFeature(caster.id, 'galeCombo')
-                  updateChar(caster.id, {
-                    combatBuffs: { ...caster.combatBuffs, galeComboReady: undefined },
-                  })
-                }
-                for (const [i, target] of selectedTargets.entries()) {
-                  await resolveAttack(target, {
-                    skipCleanup: true,
-                    skipUseSkill: true,
-                    silent: i > 0,
-                    skillOverride: perArrowSkill,
-                  })
-                }
-                pushCombatLog(
-                  `${caster.name} 使用 ${targeting.skill.name}：${selectedTargets
-                    .map((t, i) => `第${i + 1}支→${t.label}`)
-                    .join('，')}`,
-                  'attack',
-                )
+                await resolveArrowSequenceAttack(caster, targeting.skill, selectedTargets, { waiveAp })
                 setTargeting(null)
                 setAoePreviewCell(null)
               } finally {
@@ -4128,6 +4733,11 @@ export default function MapsPage() {
       }
     }
     const tok = activeMap?.tokens.find((t) => t.id === tokenId)
+    if (!isDM && tok?.type === 'player' && tok.characterId === playerChar?.id) {
+      setSelectedTokenId(null)
+      setSelectedCharacterTokenId(null)
+      return
+    }
     if (tok?.characterId) {
       setActiveCharId(tok.characterId)
       setSelectedCharacterTokenId(tokenId)
@@ -4225,11 +4835,14 @@ export default function MapsPage() {
     seenRollRequestIdsRef.current.clear()
     seenPlayerActionIdsRef.current.clear()
     seenPlayerActionAckIdsRef.current.clear()
+    suppressedGaleComboPromptIdsRef.current.clear()
     pendingSharedDodgeRef.current = null
     pendingSharedStableMindRef.current = null
+    pendingSharedGaleComboRef.current = null
     setDodgePrompt(null)
     setSharedDodgePrompt(null)
     setSharedStableMindPrompt(null)
+    setSharedGaleComboPrompt(null)
     setPendingPlayerActionLocked(null)
     setRollRequestPreview(null)
     setDiceBoxD20(null)
@@ -4263,6 +4876,15 @@ export default function MapsPage() {
         saveMod: 0,
         saveTotal: 0,
         dc: 0,
+        updatedAt,
+      }),
+      saveSharedResource<SharedGaleComboState>('gale-combo', {
+        id: `${mapId}:combat-start:gale-combo:${updatedAt}`,
+        mapId,
+        status: 'done',
+        casterCharId: '',
+        casterName: '',
+        triggerLabel: '',
         updatedAt,
       }),
       saveSharedResource<SharedPlayerActionState>('player-action', {
@@ -4303,6 +4925,7 @@ export default function MapsPage() {
     clearEnemyTurnTimers()
     setCombatLog([])
     setCombatLogOpen(true)
+    setPlayerCombatEndedLocked(false)
     await clearCombatMessageQueues(activeMap.id, { clearCombatLog: true, combatId: nextCombatId })
     enemyAppliedKeysRef.current.clear()
     nonActorSkippedKeysRef.current.clear()
@@ -4407,8 +5030,7 @@ export default function MapsPage() {
     if (pendingDeathKeysRef.current.size > 0) return false
     const outcome = currentCombatOutcome()
     if (!outcome.ended) return false
-    window.alert(outcome.message)
-    endCombat()
+    void showCombatNotice('战斗结束', outcome.message, 'sky').finally(() => endCombat())
     return true
   }
 
@@ -4459,6 +5081,42 @@ export default function MapsPage() {
         saveMod: save.saveMod,
         saveTotal: save.saveTotal,
         dc: save.dc,
+        expiresAt,
+        updatedAt: Date.now(),
+      })
+    })
+  }
+
+  const requestSharedGaleComboChoice = (
+    caster: Character,
+    triggerLabel: string,
+  ): Promise<boolean> => {
+    if (!activeMap || !isDM) {
+      return showCombatDialog({
+        title: '疾风连击',
+        message:
+          `${caster.name} ${triggerLabel}。\n\n` +
+          '是否发动疾风连击？发动后，下一次已准备技能或基础射击不消耗 AP；释放后消耗 1 次疾风连击。',
+        confirmText: '发动',
+        cancelText: '暂不发动',
+        tone: 'violet',
+      })
+    }
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const expiresAt = Date.now() + 15000
+    return new Promise((resolve) => {
+      pendingSharedGaleComboRef.current = {
+        id,
+        casterCharId: caster.id,
+        resolve,
+      }
+      void saveSharedResource<SharedGaleComboState>('gale-combo', {
+        id,
+        mapId: activeMap.id,
+        status: 'pending',
+        casterCharId: caster.id,
+        casterName: caster.name,
+        triggerLabel,
         expiresAt,
         updatedAt: Date.now(),
       })
@@ -4625,12 +5283,20 @@ export default function MapsPage() {
       }
     }
 
-    const applyFullDamage = (charId: string, amount: number) => {
+    const applyFullDamage = async (charId: string, amount: number) => {
       if (amount <= 0) return
       const before = useCharacterStore.getState().characters.find((c) => c.id === charId)
       const surge = before ? findClassTrait(before, 'arcaneSurge') : undefined
       if (before && surge && surge.uses > 0 && before.currentHp > 0 && before.currentHp - amount <= 0) {
-        if (window.confirm(`魔法浪涌：${before.name} 将受到致命伤害。是否消耗 1 次使用，把生命改为 1？`)) {
+        if (
+          await showCombatDialog({
+            title: '魔法浪涌',
+            message: `${before.name} 将受到致命伤害。\n是否消耗 1 次使用，把生命改为 1？`,
+            confirmText: '发动',
+            cancelText: '不发动',
+            tone: 'violet',
+          })
+        ) {
           useClassFeature(before.id, 'arcaneSurge')
           updateChar(before.id, { currentHp: 1 })
           syncTargetHp(before.id)
@@ -4747,7 +5413,7 @@ export default function MapsPage() {
             }))
           }
           await runEnemyStage('beforeDamageApplied')
-          applyFullDamage(targetChar.id, finalDamage)
+          await applyFullDamage(targetChar.id, finalDamage)
           if (enemyResolutionSession) {
             enemyResolutionSession.context.appliedDamage = enemyResolutionSession.context.pendingDamage.map((packet) => ({
               ...packet,
@@ -4830,7 +5496,7 @@ export default function MapsPage() {
             }))
           }
           await runEnemyStage('beforeDamageApplied')
-          applyFullDamage(targetChar.id, pendingDamage)
+          await applyFullDamage(targetChar.id, pendingDamage)
           if (enemyResolutionSession) {
             enemyResolutionSession.context.appliedDamage = enemyResolutionSession.context.pendingDamage.map((packet) => ({
               ...packet,
@@ -4842,12 +5508,26 @@ export default function MapsPage() {
         if (resolved.dodged) {
           damageRollValues = []
           damageRollTotal = 0
-          const leap = offerAgileLeap(targetChar)
-          if (leap.accepted) {
-            updateChar(targetChar.id, {
-              combatBuffs: { ...targetChar.combatBuffs, agileLeapMoveFeet: leap.feet },
+          if (canOfferAgileLeap(targetChar)) {
+            const trait = findClassTrait(targetChar, 'agileLeap')
+            const feet = agileLeapMoveFeet(targetChar)
+            const accepted = await showCombatDialog({
+              title: '灵巧跳跃',
+              message:
+                `闪避成功！是否无需消耗 AP 移动 ${feet} 尺？\n\n` +
+                `该移动无视困难地形和障碍物。长休剩余 ${trait?.uses ?? 0}/${trait?.maxUses ?? 0} 次。`,
+              confirmText: '发动',
+              cancelText: '不发动',
+              tone: 'sky',
             })
-            combatLabel += ` · 灵巧跳跃：点击地图移动至多 ${leap.feet} 尺`
+            if (accepted) {
+              const latestTarget = useCharacterStore.getState().characters.find((c) => c.id === targetChar.id) ?? targetChar
+              updateChar(targetChar.id, {
+                combatBuffs: { ...latestTarget.combatBuffs, agileLeapMoveFeet: feet },
+              })
+              combatLabel += ` · 灵巧跳跃：点击地图移动至多 ${feet} 尺`
+              pushCombatLog(`${latestTarget.name} 发动灵巧跳跃：可移动至多 ${feet} 尺，不消耗 AP。`, 'turn')
+            }
           }
         }
       }
@@ -4868,7 +5548,7 @@ export default function MapsPage() {
       await runEnemyStage('attackRollResolved')
       const pendingDamage = await resolveEnemyDamageDice()
       await runEnemyStage('beforeDamageApplied')
-      applyFullDamage(result.targetCharacterId, pendingDamage)
+      await applyFullDamage(result.targetCharacterId, pendingDamage)
       if (enemyResolutionSession) {
         enemyResolutionSession.context.appliedDamage = enemyResolutionSession.context.pendingDamage.map((packet) => ({
           ...packet,
@@ -5005,12 +5685,12 @@ export default function MapsPage() {
     let dodgeApSpent = false
     if (wantsDodge) {
       if (!canAttemptDodge(latest)) {
-        alert('行动点不足，无法尝试闪避。')
+        void showCombatNotice('行动点不足', '无法尝试闪避。', 'amber')
         return
       }
       const spent = spendAP(latest.id, 1)
       if (!spent) {
-        alert('行动点不足，无法尝试闪避。')
+        void showCombatNotice('行动点不足', '无法尝试闪避。', 'amber')
         return
       }
       const attackerName = activeMap?.tokens.find((t) => t.id === result.attackerTokenId)?.label ?? '敌人'
@@ -5094,6 +5774,24 @@ export default function MapsPage() {
       saveTotal: prompt.saveTotal,
       dc: prompt.dc,
       useStableMind,
+      expiresAt: prompt.expiresAt,
+      updatedAt: Date.now(),
+    })
+  }
+
+  const handleSharedGaleComboChoice = async (useGaleCombo: boolean) => {
+    if (!sharedGaleComboPrompt || !activeMap) return
+    const prompt = sharedGaleComboPrompt
+    suppressedGaleComboPromptIdsRef.current.add(prompt.id)
+    setSharedGaleComboPrompt(null)
+    await saveSharedResource<SharedGaleComboState>('gale-combo', {
+      id: prompt.id,
+      mapId: activeMap.id,
+      status: 'answered',
+      casterCharId: prompt.casterChar.id,
+      casterName: prompt.casterChar.name,
+      triggerLabel: prompt.triggerLabel,
+      useGaleCombo,
       expiresAt: prompt.expiresAt,
       updatedAt: Date.now(),
     })
@@ -5321,6 +6019,9 @@ export default function MapsPage() {
             charConds = charConds.filter((c) => c !== NO_MOVE_STATUS_LABEL)
           }
         }
+        if (t.illusionDanceTurns && t.illusionDanceTurns > 0) {
+          patch.illusionDanceTurns = t.illusionDanceTurns - 1
+        }
 
         if (Object.keys(patch).length > 0) {
           updateToken(activeMap.id, t.id, patch)
@@ -5347,7 +6048,8 @@ export default function MapsPage() {
       }
     }
     const next = round + 1
-    const nextCharacters = resetRoundApForActiveMap('next-round')
+    const roundApReset = resetRoundApForActiveMap('next-round')
+    const nextCharacters = roundApReset.characters
     const nextEnemyAp: Record<string, { current: number; max: number }> = {}
     for (const token of activeMap.tokens) {
       if (token.type === 'enemy' && isTokenAlive(token, nextCharacters)) {
@@ -5359,13 +6061,21 @@ export default function MapsPage() {
     pushCombatLog(`进入第 ${next} 回合`, 'turn', next)
     setRound(next)
     roundRef.current = next
-    publishCombatState({
-      active: true,
-      round: next,
-      initiativeIndex: 0,
-      initiativeOrder: initiativeOrderRef.current,
-      enemyApByToken: nextEnemyAp,
-    })
+    orderedCombatPublishRef.current = true
+    void (async () => {
+      try {
+        await roundApReset.saved
+        await publishCombatState({
+          active: true,
+          round: next,
+          initiativeIndex: 0,
+          initiativeOrder: initiativeOrderRef.current,
+          enemyApByToken: nextEnemyAp,
+        })
+      } finally {
+        orderedCombatPublishRef.current = false
+      }
+    })()
   }
 
   const advanceInitiativeCore = () => {
@@ -5467,20 +6177,56 @@ export default function MapsPage() {
     acceptedPosition?: { x: number; y: number },
   ) => {
     if (!activeMap || mode !== 'dm') return
+    const appliedAt = Date.now()
+    const baseline = playerActionResultBaselinesRef.current[action.id]
+    const result =
+      status === 'accepted' && baseline
+        ? summarizePlayerActionResult(
+            action,
+            baseline,
+            capturePlayerActionResultBaseline({
+              characters: useCharacterStore.getState().characters,
+              map: useMapStore.getState().maps.find((map) => map.id === activeMap.id) ?? activeMap,
+              enemyApByToken: enemyApByTokenRef.current,
+            }),
+          )
+        : undefined
+    delete playerActionResultBaselinesRef.current[action.id]
     const ack: SharedPlayerActionAckState = {
-      id: `${action.id}:ack:${Date.now()}`,
+      id: `${action.id}:ack:${appliedAt}`,
       mapId: activeMap.id,
       combatId: combatIdRef.current,
       actionId: action.id,
       status,
       reason,
       acceptedPosition,
+      appliedAt: status === 'accepted' ? appliedAt : undefined,
+      result,
       round,
       initiativeIndex,
-      updatedAt: Date.now(),
+      updatedAt: appliedAt,
     }
-    void saveSharedResource('player-action-ack', ack)
-    void publishSharedEvent<SharedPlayerActionAckState>('player-action-dm-to-player', ack)
+    void (async () => {
+      if (status === 'accepted') {
+        const currentCharacters = useCharacterStore.getState().characters
+        const currentMaps = useMapStore.getState().maps
+        const currentSelectedId = useMapStore.getState().selectedId
+        await Promise.all([
+          saveSharedResource('characters', {
+            characters: currentCharacters,
+            selectedId: useCharacterStore.getState().selectedId,
+            updatedAt: appliedAt,
+          }),
+          saveSharedResource('maps', {
+            maps: currentMaps,
+            selectedId: currentSelectedId,
+            updatedAt: appliedAt,
+          }),
+        ])
+      }
+      await saveSharedResource('player-action-ack', ack)
+      await publishSharedEvent<SharedPlayerActionAckState>('player-action-dm-to-player', ack)
+    })()
   }
 
   const completePlayerActionRequest = (action: SharedPlayerActionState) => {
@@ -5492,25 +6238,7 @@ export default function MapsPage() {
   }
 
   const getPlayerActionExecutionKey = (action: SharedPlayerActionState) => {
-    const targetIds = action.targetTokenIds?.length ? action.targetTokenIds.join(',') : action.targetTokenId ?? ''
-    const targetCell = action.targetCell ? `${action.targetCell.col},${action.targetCell.row}` : ''
-    const targetPosition = action.targetPosition
-      ? `${Math.round(action.targetPosition.x)},${Math.round(action.targetPosition.y)}`
-      : ''
-    return [
-      action.combatId,
-      action.round,
-      action.initiativeIndex,
-      action.actorTokenId,
-      action.characterId,
-      action.type,
-      action.skillId ?? '',
-      action.featureKey ?? '',
-      targetIds,
-      targetCell,
-      targetPosition,
-      action.aoeRectRotation ?? '',
-    ].join('|')
+    return action.id
   }
 
   const reservePlayerActionExecution = (action: SharedPlayerActionState) => {
@@ -5536,7 +6264,11 @@ export default function MapsPage() {
     const liveRound = roundRef.current
     const liveIndex = initiativeIndexRef.current
     const current = initiativeOrderRef.current[liveIndex]
-    if (!combatActiveRef.current || !current) return
+    if (!combatActiveRef.current || !current) {
+      acknowledgePlayerAction(action, 'rejected', 'combat-ended')
+      completePlayerActionRequest(action)
+      return
+    }
     if (seenPlayerActionIdsRef.current.has(action.id)) return
     seenPlayerActionIdsRef.current.add(action.id)
 
@@ -5562,9 +6294,89 @@ export default function MapsPage() {
       return
     }
 
+    playerActionResultBaselinesRef.current[action.id] = capturePlayerActionResultBaseline({
+      characters: useCharacterStore.getState().characters,
+      map: useMapStore.getState().maps.find((map) => map.id === activeMap.id) ?? activeMap,
+      enemyApByToken: enemyApByTokenRef.current,
+    })
+
     if (action.type === 'activate-feature') {
       const actor = useCharacterStore.getState().characters.find((c) => c.id === action.characterId)
-      if (!actor || action.featureKey !== 'preciseStrike') {
+      if (!actor || !action.featureKey) {
+        acknowledgePlayerAction(action, 'rejected', 'unsupported-feature')
+        completePlayerActionRequest(action)
+        return
+      }
+      if (action.featureKey === 'illusionDance') {
+        const targetIds = action.targetTokenIds?.length
+          ? action.targetTokenIds
+          : action.targetTokenId
+            ? [action.targetTokenId]
+            : []
+        const ok = await resolveIllusionDance(actor, targetIds)
+        if (!ok) {
+          acknowledgePlayerAction(action, 'rejected', 'invalid-target')
+          completePlayerActionRequest(action)
+          return
+        }
+        completePlayerActionRequest(action)
+        acknowledgePlayerAction(action, 'accepted')
+        return
+      }
+      if (action.featureKey === 'eagleEye') {
+        const trait = findClassTrait(actor, 'eagleEye')
+        if (!trait || trait.uses <= 0) {
+          acknowledgePlayerAction(action, 'rejected', 'feature-unavailable')
+          completePlayerActionRequest(action)
+          return
+        }
+        if (actor.currentAP < 1) {
+          acknowledgePlayerAction(action, 'rejected', 'insufficient-ap')
+          completePlayerActionRequest(action)
+          return
+        }
+        updateChar(actor.id, { currentAP: actor.currentAP - 1 })
+        const ok = useCharacterStore.getState().activateEagleEye(actor.id)
+        if (!ok) {
+          acknowledgePlayerAction(action, 'rejected', 'feature-unavailable')
+          completePlayerActionRequest(action)
+          return
+        }
+        pushApLog(actor, 1, '激活鹰眼')
+        completePlayerActionRequest(action)
+        acknowledgePlayerAction(action, 'accepted')
+        return
+      }
+      if (action.featureKey === 'doubleArrow') {
+        const trait = findClassTrait(actor, 'doubleArrow')
+        if (!trait || trait.uses <= 0) {
+          acknowledgePlayerAction(action, 'rejected', 'feature-unavailable')
+          completePlayerActionRequest(action)
+          return
+        }
+        const ready = !actor.combatBuffs?.doubleArrowReady
+        if (ready) {
+          if (actor.currentAP < 1) {
+            acknowledgePlayerAction(action, 'rejected', 'insufficient-ap')
+            completePlayerActionRequest(action)
+            return
+          }
+          updateChar(actor.id, {
+            currentAP: actor.currentAP - 1,
+            combatBuffs: { ...actor.combatBuffs, doubleArrowReady: true },
+          })
+          pushApLog(actor, 1, '激活双箭')
+        } else {
+          updateChar(actor.id, {
+            combatBuffs: { ...actor.combatBuffs, doubleArrowReady: undefined },
+          })
+          pushCombatLog(`${actor.name} 取消双箭`, 'turn')
+        }
+        completePlayerActionRequest(action)
+        acknowledgePlayerAction(action, 'accepted')
+        return
+      }
+      if (action.featureKey !== 'preciseStrike') {
         acknowledgePlayerAction(action, 'rejected', 'unsupported-feature')
         completePlayerActionRequest(action)
         return
@@ -5606,7 +6418,7 @@ export default function MapsPage() {
         : action.targetTokenId
           ? [action.targetTokenId]
           : []
-      const targets = targetIds
+      let targets = targetIds
         .map((targetId) => activeMap.tokens.find((t) => t.id === targetId))
         .filter((target): target is Token => !!target)
       if (
@@ -5627,38 +6439,15 @@ export default function MapsPage() {
         return
       }
       const doubleArrow = canUseDoubleArrow(actor, skill) && !!actor.combatBuffs?.doubleArrowReady
+      if (skill.skillTreeId === 'multiShot' && targets.length === 1) {
+        const shots = Math.max(1, skill.arrowShots ?? 1)
+        targets = Array.from({ length: shots }, () => targets[0])
+      }
       const isArrowSequence =
-        action.targetTokenIds?.length &&
-        (skill.skillTreeId === 'multiShot' || skill.skillTreeId === 'rageShot')
+        skill.skillTreeId === 'multiShot' ||
+        (action.targetTokenIds?.length && skill.skillTreeId === 'rageShot')
       if (isArrowSequence) {
-        const perArrowSkill: CombatSkill = { ...skill, arrowShots: 1 }
-        useSkillStore(actor.id, skill.id, waiveAp ? { waiveAp: true } : undefined)
-        pushApLog(actor, waiveAp ? 0 : skill.apCost, `使用 ${skill.name}`, `${targets.length} 支箭`)
-        if (waiveAp && actor.combatBuffs?.galeComboReady) {
-          useClassFeature(actor.id, 'galeCombo')
-          updateChar(actor.id, {
-            combatBuffs: { ...actor.combatBuffs, galeComboReady: undefined },
-          })
-        }
-        for (const [index, target] of targets.entries()) {
-          await resolveAttack(target, {
-            skipCleanup: true,
-            skipUseSkill: true,
-            silent: index > 0,
-            skillOverride: perArrowSkill,
-            targetingOverride: {
-              casterId: actor.id,
-              skill: perArrowSkill,
-              waiveAp: waiveAp || undefined,
-            },
-          })
-        }
-        pushCombatLog(
-          `${actor.name} 使用 ${skill.name}：${targets
-            .map((target, index) => `第${index + 1}支→${target.label}`)
-            .join('；')}`,
-          'attack',
-        )
+        await resolveArrowSequenceAttack(actor, skill, targets, { waiveAp })
         completePlayerActionRequest(action)
         acknowledgePlayerAction(action, 'accepted')
         return
@@ -5728,7 +6517,7 @@ export default function MapsPage() {
         completePlayerActionRequest(action)
         return
       }
-      const targetPosition = snapToCellCenter(action.targetPosition.x, action.targetPosition.y, map)
+      const targetPosition = snapTokenToGridCenter(action.targetPosition.x, action.targetPosition.y, token, map)
       const center = { x: token.x, y: token.y }
       if (!isWithinMovementRange(center, targetPosition, actor.speed, map)) {
         acknowledgePlayerAction(action, 'rejected', 'out-of-range')
@@ -5804,9 +6593,20 @@ export default function MapsPage() {
     advanceInitiative()
   }
 
-  const sendPlayerEndTurnRequest = () => {
-    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
+  const canSendPlayerCombatAction = () => {
+    if (!activeMap || mode !== 'player') return false
+    if (playerCombatLocked) return false
+    if (!combatActiveRef.current || !combatActive) return false
+    if (!turnCharacter || !currentInitiativeToken) return false
     if (pendingPlayerActionRef.current) return false
+    if (currentInitiativeToken.type !== 'player') return false
+    if (currentInitiativeToken.characterId !== turnCharacter.id) return false
+    if (turnCharacter.id !== playerChar?.id) return false
+    return isTokenAlive(currentInitiativeToken, useCharacterStore.getState().characters)
+  }
+
+  const sendPlayerEndTurnRequest = () => {
+    if (!canSendPlayerCombatAction() || !activeMap || !turnCharacter || !currentInitiativeToken) return false
     const seq = playerActionSeqRef.current + 1
     playerActionSeqRef.current = seq
     const action: SharedPlayerActionState = {
@@ -5829,9 +6629,11 @@ export default function MapsPage() {
     return true
   }
 
-  const sendPlayerActivateFeatureRequest = (featureKey: ClassFeatureKey) => {
-    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
-    if (pendingPlayerActionRef.current) return false
+  const sendPlayerActivateFeatureRequest = (
+    featureKey: ClassFeatureKey,
+    opts?: { targetTokenId?: string; targetTokenIds?: string[] },
+  ) => {
+    if (!canSendPlayerCombatAction() || !activeMap || !turnCharacter || !currentInitiativeToken) return false
     const seq = playerActionSeqRef.current + 1
     playerActionSeqRef.current = seq
     const action: SharedPlayerActionState = {
@@ -5843,6 +6645,8 @@ export default function MapsPage() {
       type: 'activate-feature',
       actorTokenId: currentInitiativeToken.id,
       characterId: turnCharacter.id,
+      targetTokenId: opts?.targetTokenId,
+      targetTokenIds: opts?.targetTokenIds,
       featureKey,
       round,
       initiativeIndex,
@@ -5857,8 +6661,7 @@ export default function MapsPage() {
   }
 
   const sendPlayerAttackTokenRequest = (targetToken: Token, skill: CombatSkill, targetTokenIds?: string[]) => {
-    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
-    if (pendingPlayerActionRef.current) return false
+    if (!canSendPlayerCombatAction() || !activeMap || !turnCharacter || !currentInitiativeToken) return false
     if (getSkillAoeTargeting(skill)) return false
     const seq = playerActionSeqRef.current + 1
     playerActionSeqRef.current = seq
@@ -5886,8 +6689,7 @@ export default function MapsPage() {
   }
 
   const sendPlayerAoeAttackRequest = (targetCell: GridCell) => {
-    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken || !targeting?.aoe) return false
-    if (pendingPlayerActionRef.current) return false
+    if (!canSendPlayerCombatAction() || !activeMap || !turnCharacter || !currentInitiativeToken || !targeting?.aoe) return false
     const seq = playerActionSeqRef.current + 1
     playerActionSeqRef.current = seq
     const action: SharedPlayerActionState = {
@@ -5914,8 +6716,7 @@ export default function MapsPage() {
   }
 
   const sendPlayerMoveRequest = (targetPosition: { x: number; y: number }, movedFeet: number) => {
-    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken || !myPlayerToken) return false
-    if (pendingPlayerActionRef.current) return false
+    if (!canSendPlayerCombatAction() || !activeMap || !turnCharacter || !currentInitiativeToken || !myPlayerToken) return false
     if (turnCharacter.currentAP < 1) return false
     const seq = playerActionSeqRef.current + 1
     playerActionSeqRef.current = seq
@@ -5941,8 +6742,7 @@ export default function MapsPage() {
   }
 
   const sendPlayerQiReduceCooldownRequest = (skill: CombatSkill) => {
-    if (!activeMap || mode !== 'player' || !turnCharacter || !currentInitiativeToken) return false
-    if (pendingPlayerActionRef.current) return false
+    if (!canSendPlayerCombatAction() || !activeMap || !turnCharacter || !currentInitiativeToken) return false
     if (skill.remaining <= 0 || (turnCharacter.qi ?? 0) < 1) return false
     const seq = playerActionSeqRef.current + 1
     playerActionSeqRef.current = seq
@@ -5961,28 +6761,28 @@ export default function MapsPage() {
       seq,
       updatedAt: Date.now(),
     }
-    const previousQi = turnCharacter.qi ?? 0
-    const previousRemaining = skill.remaining
-    updateChar(turnCharacter.id, {
-      qi: Math.max(0, previousQi - 1),
-      combatSkills: turnCharacter.combatSkills.map((s) =>
-        s.id === skill.id ? { ...s, remaining: Math.max(0, s.remaining - 1) } : s,
-      ),
-    })
-    playerActionRollbackRef.current[action.id] = () => {
-      const latest = useCharacterStore.getState().characters.find((c) => c.id === turnCharacter.id)
-      if (!latest) return
-      updateChar(turnCharacter.id, {
-        qi: previousQi,
-        combatSkills: latest.combatSkills.map((s) =>
-          s.id === skill.id ? { ...s, remaining: previousRemaining } : s,
-        ),
-      })
-    }
     setPendingPlayerActionLocked({ id: action.id, label: `${turnCharacter.name} 消耗气降低冷却` })
     void saveSharedResource<SharedPlayerActionState>('player-action', action)
     void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
     return true
+  }
+
+  const waitForAuthoritativePlayerActionSync = async (appliedAt?: number) => {
+    if (appliedAt) {
+      const deadline = Date.now() + 3000
+      while (Date.now() < deadline) {
+        const [mapsState, charactersState] = await Promise.all([
+          loadSharedResource<{ updatedAt?: number }>('maps'),
+          loadSharedResource<{ updatedAt?: number }>('characters'),
+        ])
+        if (isAuthoritativeActionSnapshotReady(appliedAt, mapsState?.updatedAt, charactersState?.updatedAt)) break
+        await new Promise((resolve) => window.setTimeout(resolve, 100))
+      }
+    }
+    await Promise.all([
+      useMapStore.getState().loadShared(),
+      useCharacterStore.getState().loadShared(),
+    ])
   }
 
   useEffect(() => {
@@ -6007,30 +6807,29 @@ export default function MapsPage() {
 
   useEffect(() => {
     if (mode !== 'player' || !activeMap) return
+    let cancelled = false
     const applyAck = (ack: SharedPlayerActionAckState | null) => {
       if (!ack || ack.mapId !== activeMap.id) return
       if (seenPlayerActionAckIdsRef.current.has(ack.id)) return
       seenPlayerActionAckIdsRef.current.add(ack.id)
       const current = pendingPlayerActionRef.current
       if (!current || current.id !== ack.actionId) return
-      if (ack.status === 'rejected') {
-        playerActionRollbackRef.current[ack.actionId]?.()
-      } else {
-        void useMapStore.getState().loadShared()
-        void useCharacterStore.getState().loadShared()
-      }
-      delete playerActionRollbackRef.current[ack.actionId]
-      window.setTimeout(() => {
-        if (pendingPlayerActionRef.current?.id === ack.actionId) {
-          setPendingPlayerActionLocked(null)
+      void (async () => {
+        if (ack.status === 'accepted') {
+          await waitForAuthoritativePlayerActionSync(ack.appliedAt)
         }
-      }, 100)
+        if (cancelled) return
+        window.setTimeout(() => {
+          if (!cancelled && pendingPlayerActionRef.current?.id === ack.actionId) {
+            setPendingPlayerActionLocked(null)
+          }
+        }, 100)
+      })()
     }
     const unsubscribe = subscribeSharedEvent<SharedPlayerActionAckState>(
       'player-action-dm-to-player',
       applyAck,
     )
-    let cancelled = false
     const load = async () => {
       const ack = await loadSharedResource<SharedPlayerActionAckState>('player-action-ack')
       if (!cancelled) applyAck(ack)
@@ -6163,9 +6962,18 @@ export default function MapsPage() {
     }
   }, [combatActive, activeMap?.id, currentInitiativeToken?.id, characters, defeatedTokenIds.length, isDM])
 
+  useEffect(() => {
+    const wasActive = previousCombatActiveRef.current
+    previousCombatActiveRef.current = combatActive
+    if (isDM || combatActive || !wasActive) return
+    setPlayerCombatEndedLocked(true)
+    clearPlayerCombatEndUI()
+  }, [isDM, combatActive])
+
   const handlePlayerEndTurn = (event?: React.MouseEvent) => {
     event?.stopPropagation()
     if (advancingTurnRef.current) return
+    if (!combatActive) return
     clearPlayerCombatUI()
     setTargeting(null)
     setAoePreviewCell(null)
@@ -6290,6 +7098,7 @@ export default function MapsPage() {
               map={activeMap}
               selectedTokenId={selectedTokenId}
               onSelectToken={handleSelectToken}
+              targetSelectTokenIds={playerCombatLocked ? [] : (featureTargeting?.selectedTokenIds ?? [])}
               isDM={isDM}
               measureMode={isDM && measureMode && !targeting && !showMoveRange && !gridAdjustMode && !deleteSelectMode}
               hpByToken={hpByToken}
@@ -6298,10 +7107,10 @@ export default function MapsPage() {
               projectiles={projectiles}
               defeatedTokenIds={defeatedTokenIds}
               builtinGrid={!!activeMap.builtinGridDetected}
-              moveSelectMode={inMoveSelectMode && !!activeMoveCircle && !targeting?.aoe}
+              moveSelectMode={!playerCombatLocked && inMoveSelectMode && !!activeMoveCircle && !targeting?.aoe}
               moveCircle={activeMoveCircle}
               onMoveSelect={handleMoveSelect}
-              aoeSelectMode={!!targeting?.aoe}
+              aoeSelectMode={!playerCombatLocked && !!targeting?.aoe}
               aoeHighlight={aoeHighlight}
               rangedRangeCells={rangedRangeCells}
               onAoePreviewCell={handleAoePreviewCell}
@@ -6314,6 +7123,7 @@ export default function MapsPage() {
               onDeleteBoxConfirm={handleDeleteBoxConfirm}
               onDeleteCancel={() => setDeleteSelectMode(false)}
               onBlankContextMenu={() => {
+                setFeatureTargeting(null)
                 setSelectedTokenId(null)
                 setSelectedCharacterTokenId(null)
                 setEnemyDetailOpen(false)
@@ -6390,6 +7200,94 @@ export default function MapsPage() {
           )}
 
           {/* 骰子飞入动画 */}
+          {featureTargeting?.featureKey === 'illusionDance' && (
+            <div className="absolute left-1/2 top-14 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-fuchsia-400/40 bg-void-950/90 px-4 py-2 text-sm shadow-2xl backdrop-blur-sm">
+              <span className="text-2xl">🪩</span>
+              <span className="text-slate-200">
+                迷幻舞步：选择敌对目标{' '}
+                <span className="font-semibold text-fuchsia-200">
+                  {featureTargeting.selectedTokenIds.length}/{featureTargeting.maxTargets}
+                </span>
+                {featureTargeting.maxTargets <= 1 ? '，点击目标后立即结算' : '，选满自动结算，也可提前执行'}
+              </span>
+              <button
+                disabled={featureTargeting.selectedTokenIds.length === 0}
+                onClick={() => submitIllusionDanceTargets(featureTargeting.selectedTokenIds)}
+                className="rounded-lg bg-fuchsia-500/20 px-2 py-1 text-xs text-fuchsia-100 hover:bg-fuchsia-500/30 disabled:cursor-not-allowed disabled:bg-white/5 disabled:text-slate-500"
+              >
+                执行
+              </button>
+              <button
+                onClick={() => setFeatureTargeting(null)}
+                className="rounded-lg bg-white/5 px-2 py-1 text-xs text-slate-300 hover:bg-white/10"
+              >
+                取消
+              </button>
+            </div>
+          )}
+
+          {combatDialog && (
+            <div className="absolute inset-0 z-[65] flex items-center justify-center bg-black/55 backdrop-blur-sm">
+              <div
+                role="dialog"
+                aria-labelledby="combat-dialog-title"
+                className={`mx-4 w-full max-w-md rounded-2xl p-5 shadow-2xl ${
+                  combatDialog.tone === 'violet'
+                    ? 'border border-violet-400/35 bg-void-950/95'
+                    : combatDialog.tone === 'amber'
+                      ? 'border border-amber-400/35 bg-void-950/95'
+                      : combatDialog.tone === 'rose'
+                        ? 'border border-rose-400/35 bg-void-950/95'
+                        : 'border border-sky-400/35 bg-void-950/95'
+                }`}
+              >
+                <h3
+                  id="combat-dialog-title"
+                  className={`text-lg font-semibold ${
+                    combatDialog.tone === 'violet'
+                      ? 'text-violet-100'
+                      : combatDialog.tone === 'amber'
+                        ? 'text-amber-100'
+                        : combatDialog.tone === 'rose'
+                          ? 'text-rose-100'
+                          : 'text-sky-100'
+                  }`}
+                >
+                  {combatDialog.title}
+                </h3>
+                <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-300">
+                  {combatDialog.message}
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  {combatDialog.cancelText && (
+                    <button
+                      type="button"
+                      onClick={() => closeCombatDialog(false)}
+                      className="rounded-lg border border-slate-600/60 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700/80"
+                    >
+                      {combatDialog.cancelText}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => closeCombatDialog(true)}
+                    className={`rounded-lg px-4 py-2 text-sm font-semibold ${
+                      combatDialog.tone === 'violet'
+                        ? 'bg-violet-500/25 text-violet-100 hover:bg-violet-500/35'
+                        : combatDialog.tone === 'amber'
+                          ? 'bg-amber-500/25 text-amber-100 hover:bg-amber-500/35'
+                          : combatDialog.tone === 'rose'
+                            ? 'bg-rose-500/25 text-rose-100 hover:bg-rose-500/35'
+                            : 'bg-sky-500/25 text-sky-100 hover:bg-sky-500/35'
+                    }`}
+                  >
+                    {combatDialog.confirmText}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {dodgePrompt && (
             <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/55 backdrop-blur-sm">
               <div
@@ -6498,6 +7396,46 @@ export default function MapsPage() {
                     className="rounded-lg bg-violet-500/25 px-4 py-2 text-sm font-semibold text-violet-100 hover:bg-violet-500/35"
                   >
                     发动残影脱身
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {sharedGaleComboPrompt && (
+            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/55 backdrop-blur-sm">
+              <div
+                role="dialog"
+                aria-labelledby="shared-gale-combo-prompt-title"
+                className="relative mx-4 w-full max-w-md rounded-2xl border border-cyan-400/35 bg-void-950/95 p-5 shadow-2xl"
+              >
+                {sharedGaleComboPrompt.expiresAt != null && (
+                  <div className="absolute right-5 top-5 rounded-full border border-cyan-300/40 bg-cyan-500/15 px-2 py-0.5 text-xs font-bold tabular-nums text-cyan-100">
+                    {Math.max(0, Math.ceil((sharedGaleComboPrompt.expiresAt - sharedDodgeNow) / 1000))}s
+                  </div>
+                )}
+                <h3 id="shared-gale-combo-prompt-title" className="text-lg font-semibold text-cyan-100">
+                  疾风连击
+                </h3>
+                <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-300">
+                  {`${sharedGaleComboPrompt.casterChar.name} ${sharedGaleComboPrompt.triggerLabel}。\n\n是否发动疾风连击？发动后会获得就绪标记，下一次已准备技能或基础射击不消耗 AP。`}
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSharedGaleComboChoice(false)}
+                    className="rounded-lg border border-slate-600/60 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700/80"
+                  >
+                    暂不发动
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="shared-gale-combo-use"
+                    data-gale-combo-id={sharedGaleComboPrompt.id}
+                    onClick={() => handleSharedGaleComboChoice(true)}
+                    className="rounded-lg bg-cyan-500/25 px-4 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/35"
+                  >
+                    发动疾风连击
                   </button>
                 </div>
               </div>
@@ -6931,6 +7869,7 @@ export default function MapsPage() {
                           setMeasureMode(false)
                           setGridAdjustMode(false)
                           setTargeting(null)
+                          setFeatureTargeting(null)
                           setAoePreviewCell(null)
                           setShowMoveRange(false)
                         }
@@ -7100,15 +8039,21 @@ export default function MapsPage() {
                   character={c}
                   isActive={c.id === activeCharId}
                   activePanel={c.id === activeCharId ? charPanel : null}
-                  onAvatarClick={() => onAvatarClick(c.id)}
-                  onPanelClick={(panel) => onPanelClick(c.id, panel)}
+                  onAvatarClick={() => {
+                    if (playerCombatLocked) return
+                    onAvatarClick(c.id)
+                  }}
+                  onPanelClick={(panel) => {
+                    if (playerCombatLocked) return
+                    onPanelClick(c.id, panel)
+                  }}
                 />
               ))}
             </div>
           )}
 
           {/* 底部浮层：按图标打开物品/特性/法术/技能栏 */}
-          {activeChar && charPanel && (
+          {activeChar && charPanel && !playerCombatLocked && (
             <div
               className={[
                 'absolute bottom-2 left-24 z-20 flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-void-900/40 p-2 pr-4 pt-3 shadow-2xl backdrop-blur-sm',
@@ -7188,7 +8133,7 @@ export default function MapsPage() {
                 <button
                   onClick={handlePlayerEndTurn}
                   data-testid="player-end-turn"
-                  disabled={!!pendingPlayerAction}
+                  disabled={!!pendingPlayerAction || !combatActive || !canControlPlayerTurn}
                   className="ml-auto flex items-center gap-1 rounded-lg bg-arcane-500/20 px-2 py-1 text-xs font-medium text-arcane-100 hover:bg-arcane-500/30"
                   title="结束回合：冷却 -1、行动点回满"
                 >

@@ -9,6 +9,7 @@ import {
   EVENT_REPLAY_LIMIT,
   IMAGE_COUNT_LIMIT,
   STATE_MAX_BYTES,
+  atomicWriteJsonStateFreshLocked,
   atomicWriteLocked,
   authorizeStateWrite,
   enforceImageQuota,
@@ -153,6 +154,17 @@ describe('withWriteLock / atomicWriteLocked — AC1 锁', () => {
     // 锁已释放，后续写正常。
     await atomicWriteLocked(file, Buffer.from('{"ok":1}'))
     expect(JSON.parse(await readFile(file, 'utf8')).ok).toBe(1)
+  })
+
+  it('does not let an older updatedAt state overwrite a newer one', async () => {
+    const file = path.join(dir, 'fresh-state.json')
+    await atomicWriteJsonStateFreshLocked(file, Buffer.from(JSON.stringify({ updatedAt: 20, value: 'new' })))
+    const accepted = await atomicWriteJsonStateFreshLocked(
+      file,
+      Buffer.from(JSON.stringify({ updatedAt: 10, value: 'old' })),
+    )
+    expect(accepted).toBe(false)
+    expect(JSON.parse(await readFile(file, 'utf8')).value).toBe('new')
   })
 })
 

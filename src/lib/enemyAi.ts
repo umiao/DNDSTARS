@@ -4,11 +4,13 @@ import { abilityMod } from './dnd'
 import { getEnemyStatBlock, getPrimaryAttackAction, type MonsterAction } from './enemyStatBlocks'
 import {
   cellDistance,
-  cellToPixel,
   isHostileToEnemy,
   occupiedCells,
-  pixelToCell,
   stepToward,
+  tokenAnchorCellFromPixel,
+  tokenCenterForAnchorCell,
+  tokenFootprintDistanceCells,
+  tokenOccupiedCellsAt,
   type GridCell,
 } from './gridCombat'
 
@@ -83,14 +85,14 @@ function enemyMeleeDexBonus(enemy: Token): number {
 }
 
 function findNearestPlayer(
-  enemyCell: GridCell,
+  enemy: Token,
   players: Token[],
   map: BattleMap,
 ): { token: Token; cell: GridCell; dist: number } | null {
   let best: { token: Token; cell: GridCell; dist: number } | null = null
   for (const t of players) {
-    const cell = pixelToCell(t.x, t.y, map)
-    const dist = cellDistance(enemyCell, cell)
+    const cell = tokenAnchorCellFromPixel(t.x, t.y, t, map)
+    const dist = tokenFootprintDistanceCells(enemy, t, map)
     if (!best || dist < best.dist) best = { token: t, cell, dist }
   }
   return best
@@ -101,20 +103,28 @@ function moveTowardTarget(
   target: GridCell,
   map: BattleMap,
   tokens: Token[],
-  enemyId: string,
+  enemy: Token,
   maxSteps: number,
 ): GridCell {
   let current = start
-  const blocked = occupiedCells(tokens, map, enemyId)
+  const blocked = occupiedCells(tokens, map, enemy.id)
+  const canOccupy = (cell: GridCell) => {
+    const pos = tokenCenterForAnchorCell(cell, enemy, map)
+    const candidate = { ...enemy, ...pos }
+    return tokenOccupiedCellsAt(candidate, map, candidate).every((occupied) => !blocked.has(`${occupied.col},${occupied.row}`))
+  }
 
   for (let i = 0; i < maxSteps; i++) {
     if (cellDistance(current, target) <= MELEE_RANGE_CELLS) break
     const next = stepToward(current, target)
     if (cellDistance(next, target) >= cellDistance(current, target)) break
-    const key = `${next.col},${next.row}`
-    if (blocked.has(key)) break
+    if (!canOccupy(next)) break
     current = next
-    blocked.add(key)
+    const pos = tokenCenterForAnchorCell(current, enemy, map)
+    const candidate = { ...enemy, ...pos }
+    for (const occupied of tokenOccupiedCellsAt(candidate, map, candidate)) {
+      blocked.add(`${occupied.col},${occupied.row}`)
+    }
   }
   return current
 }
@@ -268,8 +278,8 @@ export function planEnemyTurn(
     return { moved: false, attacked: false, message: `${enemy.label} 找不到可攻击目标。` }
   }
 
-  const startCell = pixelToCell(enemy.x, enemy.y, map)
-  const nearest = findNearestPlayer(startCell, targets, map)!
+  const startCell = tokenAnchorCellFromPixel(enemy.x, enemy.y, enemy, map)
+  const nearest = findNearestPlayer(enemy, targets, map)!
   const rangedRangeCells = enemyRangedRangeCells(enemy, map)
   // [T7/AC3] 数据驱动吐息：第一回合默认优先使用（红/绿龙等）。
   const breath = findBreathAction(enemy)
@@ -278,7 +288,7 @@ export function planEnemyTurn(
   }
   let endCell = startCell
 
-  const startDist = cellDistance(startCell, nearest.cell)
+  const startDist = nearest.dist
   if (startDist > MELEE_RANGE_CELLS && rangedRangeCells != null && startDist <= rangedRangeCells) {
     return buildEnemyAttack(enemy, nearest.token, false, undefined, 'ranged')
   }
@@ -287,13 +297,14 @@ export function planEnemyTurn(
   const moveBudget = needsDoubleMove ? MOVE_CELLS_PER_TURN * 2 : MOVE_CELLS_PER_TURN
 
   if (startDist > MELEE_RANGE_CELLS) {
-    endCell = moveTowardTarget(startCell, nearest.cell, map, map.tokens, enemy.id, moveBudget)
+    endCell = moveTowardTarget(startCell, nearest.cell, map, map.tokens, enemy, moveBudget)
   }
 
   const moved = endCell.col !== startCell.col || endCell.row !== startCell.row
   const moveApSpent = moved ? (needsDoubleMove ? 2 : 1) : 0
-  const afterMoveDist = cellDistance(endCell, nearest.cell)
-  const pos = moved ? cellToPixel(endCell, map) : undefined
+  const pos = moved ? tokenCenterForAnchorCell(endCell, enemy, map) : undefined
+  const afterMoveEnemy = pos ? { ...enemy, ...pos } : enemy
+  const afterMoveDist = tokenFootprintDistanceCells(afterMoveEnemy, nearest.token, map)
   const canRangedAfterMove = rangedRangeCells != null && afterMoveDist <= rangedRangeCells
 
   if (afterMoveDist > MELEE_RANGE_CELLS && canRangedAfterMove && moveApSpent < availableAp) {

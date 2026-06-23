@@ -82,7 +82,7 @@ export const ARCHER_SKILL_TREE: ArcherSkillDef[] = [
     emoji: '🏹',
     direction: 'basic',
     unlockLevel: 1,
-    cooldown: 3,
+    cooldown: 2,
     apCost: 1,
     tags: ['ranged'],
     range: '30 尺内一名敌军',
@@ -91,10 +91,10 @@ export const ARCHER_SKILL_TREE: ArcherSkillDef[] = [
     treeRow: 0,
     tiers: [
       { damageCount: 1, damageSides: 4, arrowShots: 2, detail: '射出两只箭矢，每支造成 1D4 点无属性伤害。' },
-      { damageCount: 2, damageSides: 4, arrowShots: 2, detail: '每支箭造成 2D4 点伤害。' },
-      { damageCount: 3, damageSides: 4, arrowShots: 2, detail: '每支箭造成 3D4 点伤害。' },
-      { damageCount: 4, damageSides: 4, arrowShots: 3, apCost: 2, detail: '射出三枚箭矢，每支造成 4D4 点伤害。花费 2 AP。' },
-      { damageCount: 5, damageSides: 4, arrowShots: 3, apCost: 2, detail: '射出三枚箭矢，每支造成 5D4 点伤害。花费 2 AP。' },
+      { damageCount: 2, damageSides: 4, arrowShots: 2, detail: '射出两只箭矢，每支造成 2D4 点无属性伤害。' },
+      { damageCount: 3, damageSides: 4, arrowShots: 2, detail: '射出两只箭矢，每支造成 3D4 点无属性伤害。' },
+      { damageCount: 3, damageSides: 4, arrowShots: 3, detail: '射出三只箭矢，每支造成 3D4 点无属性伤害。' },
+      { damageCount: 4, damageSides: 4, arrowShots: 3, detail: '射出三只箭矢，每支造成 4D4 点无属性伤害。' },
     ],
   },
   {
@@ -726,10 +726,10 @@ const SKILL_DISPLAY_META: Record<string, SkillDisplayMeta> = {
   },
   multiShot: {
     range: '30 尺',
-    target: (rank) => (rank >= 4 ? '至多三名敌人' : '至多两名敌人'),
+    target: '一名敌军',
     damageType: '无属性',
     damage: (_rank, tier) => `每支箭 ${formatSkillDamage(tier)} 点无属性伤害`,
-    effect: (rank) => (rank >= 4 ? '射出三支箭矢，可分别选择目标。' : '射出两支箭矢，可分别选择目标。'),
+    effect: (rank) => `对同一目标射出${rank >= 4 ? '三' : '两'}只箭矢；每支箭独立结算伤害修正。`,
   },
   whirlwindKick: {
     range: '周围 5 尺',
@@ -982,6 +982,13 @@ export function skillKnockbackSaveDisadvantage(skillTreeId: string, rank: number
 }
 
 export function buildSkillDescription(def: ArcherSkillDef, rank: number): string {
+  if (def.id === 'multiShot') {
+    const safeRank = Math.max(1, Math.min(MAX_SKILL_RANK, rank))
+    const tier = def.tiers[safeRank - 1] ?? def.tiers[0]
+    const arrows = Math.max(1, tier.arrowShots ?? 1)
+    const arrowText = arrows >= 3 ? '三只箭矢' : '两只箭矢'
+    return `多重射击 CD ${def.cooldown}回合，\n对30尺范围内一名敌军射出${arrowText}\n每支箭造成${formatSkillDamage(tier)}点无属性伤害。`
+  }
   return buildSkillTierDescription(def, rank)
 }
 

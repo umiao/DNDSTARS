@@ -7,10 +7,16 @@ import {
 import { ENEMY_POOL } from './enemyPool'
 import {
   getEnemyDerivedCombatStats,
+  enemyCombatInput,
   getEnemyMaxHp,
   enemyHasDerivedCombat,
 } from './enemyCombatStats'
 import { enemyTemplateToTokenPatch } from './enemyPool'
+import {
+  applyAttackDefenseDamageModifier,
+  computeDefense,
+  type CombatStatInput,
+} from './combatStats'
 
 const STAT_BLOCK_IDS = Object.keys(ENEMY_STAT_BLOCKS)
 const POOL_IDS = ENEMY_POOL.map((e) => e.id)
@@ -132,5 +138,21 @@ describe('[T6/AC5] goblin/hobgoblin equipment-derived behavior not regressed', (
     const hob = getEnemyDerivedCombatStats('hobgoblin')!
     expect(hob.equipment).toBeDefined()
     expect(hob.maxHp).toBe(22)
+  })
+})
+
+describe('enemy combat input damage modifier parity', () => {
+  it('no-equipment enemies still participate in attack-defense damage modifiers', () => {
+    const defender = enemyCombatInput('wyrmling-red')
+    expect(defender).toBeDefined()
+    expect(Math.round(computeDefense(defender!))).toBe(53)
+
+    const attacker: CombatStatInput = {
+      abilities: { str: 10, dex: 52, con: 10, int: 10, wis: 10, cha: 10 },
+    }
+    const adjusted = applyAttackDefenseDamageModifier(5, attacker, defender, 'physical')
+    expect(adjusted.diff).toBe(51)
+    expect(adjusted.modifier).toBe(6)
+    expect(adjusted.damage).toBe(11)
   })
 })

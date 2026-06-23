@@ -20,7 +20,8 @@ export function formatDodgePrompt(c: Character): string {
 
 /** @deprecated 战斗流程请使用应用内闪避弹窗 */
 export function promptDodgeChoice(c: Character): boolean {
-  return window.confirm(`闪避\n\n${formatDodgePrompt(c)}`)
+  void c
+  return false
 }
 
 /** @deprecated 使用 promptDodgeChoice */
@@ -102,12 +103,8 @@ export function canOfferAgileLeap(c: Character): boolean {
 
 export function offerAgileLeap(c: Character): { accepted: boolean; feet: number } {
   if (!canOfferAgileLeap(c)) return { accepted: false, feet: 0 }
-  const trait = findClassTrait(c, 'agileLeap')!
   const feet = agileLeapMoveFeet(c)
-  const ok = window.confirm(
-    `灵巧跳跃\n\n闪避成功！是否无需消耗 AP 移动 ${feet} 尺（无视困难地形与障碍物）？\n（长休剩余 ${trait.uses}/${trait.maxUses} 次）`,
-  )
-  return { accepted: ok, feet: ok ? feet : 0 }
+  return { accepted: false, feet }
 }
 
 export function canOfferGaleCombo(c: Character): boolean {
@@ -116,10 +113,9 @@ export function canOfferGaleCombo(c: Character): boolean {
 }
 
 export function offerGaleCombo(c: Character, effectLabel: string): boolean {
-  if (!canOfferGaleCombo(c)) return false
-  return window.confirm(
-    `疾风连击\n\n你对敌对角色施加了${effectLabel}且对方豁免失败。\n是否发动疾风连击：下一次已准备技能或基础射击无需消耗 AP？`,
-  )
+  void c
+  void effectLabel
+  return false
 }
 
 export function hasWildernessGuide(c: Character): boolean {

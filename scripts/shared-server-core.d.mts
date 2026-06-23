@@ -8,6 +8,10 @@ export const LOCK_STALE_MS: number
 
 export function withWriteLock<T>(filePath: string, fn: () => Promise<T>): Promise<T>
 export function atomicWriteLocked(filePath: string, body: Buffer | Uint8Array | string): Promise<void>
+export function atomicWriteJsonStateFreshLocked(
+  filePath: string,
+  body: Buffer | Uint8Array | string,
+): Promise<boolean>
 
 export function safeName(value: unknown): string
 

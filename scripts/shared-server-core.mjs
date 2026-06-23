@@ -102,6 +102,38 @@ export async function atomicWriteLocked(filePath, body) {
   })
 }
 
+function updatedAtFromJsonBody(body) {
+  try {
+    const text = Buffer.isBuffer(body) ? body.toString('utf8') : String(body)
+    const parsed = JSON.parse(text)
+    const value = Number(parsed?.updatedAt)
+    return Number.isFinite(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+export async function atomicWriteJsonStateFreshLocked(filePath, body) {
+  return withWriteLock(filePath, async () => {
+    const incomingUpdatedAt = updatedAtFromJsonBody(body)
+    if (incomingUpdatedAt != null) {
+      try {
+        const existing = await readFile(filePath, 'utf8')
+        const existingUpdatedAt = updatedAtFromJsonBody(existing)
+        if (existingUpdatedAt != null && incomingUpdatedAt < existingUpdatedAt) {
+          return false
+        }
+      } catch {
+        // No existing state yet; accept the write.
+      }
+    }
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
+    await writeFile(tmpPath, body)
+    await rename(tmpPath, filePath)
+    return true
+  })
+}
+
 // ── AC5：safeName 防碰撞 ────────────────────────────────────────────────────
 // 旧实现把所有非 [a-zA-Z0-9_-] 直接删掉，会把 "a/b" 与 "ab"、"x.1" 与 "x1" 折叠成同一文件。
 // 现在：保留白名单字符原样，对任何含被删字符的输入追加一段确定性 hash 后缀，使不同逻辑名

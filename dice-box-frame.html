@@ -72,6 +72,7 @@
       // requestId-level exactly-once: even if a request is posted twice (promise +
       // event double-fire upstream), only one *-result leaves this frame (AC6).
       const completedRequestIds = new Set()
+      const inFlightRequestIds = new Set()
 
       function rememberCompleted(requestId) {
         completedRequestIds.add(requestId)
@@ -152,6 +153,7 @@
       }
 
       function postResult(kind, requestId, values, fallback) {
+        inFlightRequestIds.delete(requestId)
         rememberCompleted(requestId)
         const payload =
           kind === 'd20'
@@ -173,9 +175,10 @@
       async function handleRoll(kind, requestId, qty, sides, values) {
         if (requestId == null) return
         if (completedRequestIds.has(requestId)) return // dedup repeat requests
+        if (inFlightRequestIds.has(requestId)) return // dedup repeat requests while physics is still rolling
+        inFlightRequestIds.add(requestId)
 
         let settled = false
-        let retriedForMismatch = false
         const forced = forcedValues(qty, sides, values)
         const deliver = (vals, fallback) => {
           if (settled) return
@@ -199,22 +202,12 @@
               ? outcome.values
               : fallbackValues(qty, sides)
           if (forced.length > 0 && !sameMultiset(vals, forced)) {
-            console.warn('[dice-box-frame] forced faces mismatch; retrying roll', {
-              requestId,
-              notation,
-              expected: forced,
-              actual: vals,
-            })
-            retriedForMismatch = true
-            box.clear()
-            outcome = await box.roll(notation)
-            vals =
-              Array.isArray(outcome.values) && outcome.values.length > 0
-                ? outcome.values
-                : fallbackValues(qty, sides)
-          }
-          if (forced.length > 0 && !sameMultiset(vals, forced)) {
-            console.warn('[dice-box-frame] forced faces mismatch after retry; reporting forced values', {
+            // Some dice-box-threejs rolls render the forced @ face correctly but
+            // still report the pre-relabel raw value in the Promise payload. Do
+            // not physically reroll here: that creates a second visible dice
+            // animation for one authoritative result, most noticeably on D4
+            // extra-damage rolls such as 双箭.
+            console.warn('[dice-box-frame] forced faces mismatch; reporting forced values without reroll', {
               requestId,
               notation,
               expected: forced,
@@ -222,7 +215,7 @@
             })
             vals = forced
           }
-          deliver(vals, retriedForMismatch)
+          deliver(vals, false)
         } catch (error) {
           console.error('[dice-box-frame] roll failed', error)
           deliver(fallbackValues(qty, sides), true)

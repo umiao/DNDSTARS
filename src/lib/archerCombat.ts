@@ -109,6 +109,10 @@ export function attackDamageDiceCount(skill: CombatSkill, doubleArrow: boolean):
   return skill.damageCount
 }
 
+export function doubleArrowExtraDamageSides(featureRank: number): 4 | 6 {
+  return featureRank >= 3 ? 6 : 4
+}
+
 export function resolveRangedAttackRoll(
   caster: Character,
   skill: CombatSkill,

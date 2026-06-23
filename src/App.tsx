@@ -23,7 +23,7 @@ export default function App() {
     const timer = window.setInterval(() => {
       void loadSharedMaps()
       void loadSharedCharacters()
-    }, 2000)
+    }, 500)
     return () => window.clearInterval(timer)
   }, [endpointMode, loadSharedCharacters, loadSharedMaps])
 

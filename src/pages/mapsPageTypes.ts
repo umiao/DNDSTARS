@@ -6,6 +6,7 @@ import type { GridCell } from '../lib/gridCombat'
 import type { EnemyTurnResult } from '../lib/enemyAi'
 import type { ClassFeatureKey } from '../types/character'
 import type { DiceRoll } from '../components/DiceRollOverlay'
+import type { PlayerActionResultSummary } from '../lib/playerActionResult'
 
 export type Mode = 'dm' | 'player'
 
@@ -50,6 +51,18 @@ export interface SharedStableMindState {
   updatedAt: number
 }
 
+export interface SharedGaleComboState {
+  id: string
+  mapId: string
+  status: 'pending' | 'answered' | 'done'
+  casterCharId: string
+  casterName: string
+  triggerLabel: string
+  useGaleCombo?: boolean
+  expiresAt?: number
+  updatedAt: number
+}
+
 export interface SharedPlayerActionState {
   id: string
   mapId: string
@@ -80,6 +93,8 @@ export interface SharedPlayerActionAckState {
   status: 'accepted' | 'rejected'
   reason?: string
   acceptedPosition?: { x: number; y: number }
+  appliedAt?: number
+  result?: PlayerActionResultSummary
   round: number
   initiativeIndex: number
   updatedAt: number

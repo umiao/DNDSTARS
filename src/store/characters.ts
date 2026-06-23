@@ -46,6 +46,8 @@ let lastLocalCharactersWriteAt = 0
 // 与 DM 用的 lastLocalCharactersWriteAt 语义不同，故单列一个，避免相互污染。
 let lastAppliedCharactersUpdatedAt = 0
 let characterSaveSeq = 0
+const LOCAL_CHARACTER_CREATE_TTL_MS = 60000
+const pendingLocalCharacterCreations = new Map<string, number>()
 
 /**
  * [T10/AC2 · E11] 删除墓碑：id ⇒ 删除时间戳。
@@ -80,6 +82,25 @@ export function isCharacterTombstoned(id: string, now: number = Date.now()): boo
 /** 测试钩子：清空全部墓碑。 */
 export function clearCharacterTombstonesForTest(): void {
   characterTombstones.clear()
+}
+
+function gcPendingLocalCharacterCreations(now: number = Date.now()): void {
+  for (const [id, ts] of pendingLocalCharacterCreations) {
+    if (now - ts > LOCAL_CHARACTER_CREATE_TTL_MS) pendingLocalCharacterCreations.delete(id)
+  }
+}
+
+function markLocalCharacterCreationPending(id: string, now: number = Date.now()): void {
+  pendingLocalCharacterCreations.set(id, now)
+}
+
+function isLocalCharacterCreationPending(id: string, now: number = Date.now()): boolean {
+  gcPendingLocalCharacterCreations(now)
+  return pendingLocalCharacterCreations.has(id)
+}
+
+export function clearPendingLocalCharacterCreationsForTest(): void {
+  pendingLocalCharacterCreations.clear()
 }
 
 /**
@@ -168,6 +189,57 @@ export function mergePlayerWritableCharacter(local: Character, shared: Character
     actionPoints: shared.actionPoints,
     currentAP: shared.currentAP,
   }
+}
+
+export function mergeCharactersForSharedSave(
+  localCharacters: Character[],
+  sharedCharacters: Character[] | undefined,
+  opts: { playerPort?: boolean; now?: number } = {},
+): Character[] {
+  const now = opts.now ?? Date.now()
+  gcPendingLocalCharacterCreations(now)
+  const shared = filterTombstonedCharacters(sharedCharacters ?? [], now).map(finalizeCharacter)
+  const sharedById = new Map(shared.map((ch) => [ch.id, ch]))
+  const merged: Character[] = []
+
+  for (const local of localCharacters) {
+    if (isCharacterTombstoned(local.id, now)) continue
+    const existsInShared = sharedById.has(local.id)
+    if (opts.playerPort && !existsInShared && !isLocalCharacterCreationPending(local.id, now)) {
+      continue
+    }
+    merged.push(finalizeCharacter(local))
+  }
+
+  const mergedIds = new Set(merged.map((ch) => ch.id))
+  for (const sharedChar of shared) {
+    if (!mergedIds.has(sharedChar.id)) merged.push(sharedChar)
+  }
+  return merged
+}
+
+function mergePendingLocalCharacterCreationsForLoad(
+  sharedCharacters: Character[],
+  localCharacters: Character[],
+  now: number = Date.now(),
+): Character[] {
+  if (!isPlayerPort()) return sharedCharacters
+  gcPendingLocalCharacterCreations(now)
+  if (pendingLocalCharacterCreations.size === 0) return sharedCharacters
+
+  const sharedIds = new Set(sharedCharacters.map((ch) => ch.id))
+  for (const id of sharedIds) pendingLocalCharacterCreations.delete(id)
+
+  const merged = [...sharedCharacters]
+  const mergedIds = new Set(sharedIds)
+  for (const local of localCharacters) {
+    if (mergedIds.has(local.id)) continue
+    if (!isLocalCharacterCreationPending(local.id, now)) continue
+    if (isCharacterTombstoned(local.id, now)) continue
+    merged.push(finalizeCharacter(local))
+    mergedIds.add(local.id)
+  }
+  return merged
 }
 
 /** 自定义规则战斗字段的默认值 */
@@ -774,6 +846,7 @@ interface CharacterState {
   characters: Character[]
   selectedId: string | null
   loadShared: () => Promise<void>
+  saveSharedNow: (updatedAt?: number) => Promise<number>
   select: (id: string | null) => void
   add: (name?: string) => string
   importCharacter: (character: Partial<Character>) => string
@@ -826,26 +899,50 @@ interface CharacterState {
 export const useCharacterStore = create<CharacterState>()(
   persist(
     (set, get) => {
+      const publishCharactersSnapshot = async (updatedAt: number = Date.now()) => {
+        const seq = ++characterSaveSeq
+        const characters = get().characters
+        const selectedId = characters.some((ch) => ch.id === get().selectedId)
+          ? get().selectedId
+          : (characters[0]?.id ?? null)
+        const payload: SharedCharactersState = {
+          characters,
+          selectedId,
+          updatedAt,
+        }
+        lastLocalCharactersWriteAt = payload.updatedAt ?? Date.now()
+        lastSharedCharactersSnapshot = JSON.stringify(payload)
+        await saveSharedResource('characters', payload)
+        if (seq !== characterSaveSeq) return updatedAt
+        return updatedAt
+      }
+
       const saveCharacters = () => {
         const seq = ++characterSaveSeq
         const save = async () => {
           let characters = get().characters
-          if (isPlayerPort()) {
-            const shared = await loadSharedResource<SharedCharactersState>('characters')
-            if (seq !== characterSaveSeq) return
-            if (shared?.characters) {
+          const shared = await loadSharedResource<SharedCharactersState>('characters')
+          if (seq !== characterSaveSeq) return
+          if (shared?.characters) {
+            if (isPlayerPort()) {
               const sharedById = new Map(shared.characters.map((ch) => [ch.id, ch]))
               characters = characters.map((ch) => {
                 const sharedChar = sharedById.get(ch.id)
                 if (!sharedChar) return ch
                 return mergePlayerWritableCharacter(ch, sharedChar)
               })
-              set({ characters })
             }
+            characters = mergeCharactersForSharedSave(characters, shared.characters, {
+              playerPort: isPlayerPort(),
+            })
+            set({ characters })
           }
+          const selectedId = characters.some((ch) => ch.id === get().selectedId)
+            ? get().selectedId
+            : (characters[0]?.id ?? null)
           const payload: SharedCharactersState = {
             characters,
-            selectedId: get().selectedId,
+            selectedId,
             updatedAt: Date.now(),
           }
           if (seq !== characterSaveSeq) return
@@ -895,21 +992,30 @@ export const useCharacterStore = create<CharacterState>()(
           // 不得复活它。墓碑过期后（GC）该过滤自动失效，被删 id 可被复用。
           const sharedCharacters = filterTombstonedCharacters(shared.characters).map(finalizeCharacter)
           const localCharacters = get().characters
-          const nextSelectedId = shared.selectedId ?? sharedCharacters[0]?.id ?? null
+          const mergedSharedCharacters = mergePendingLocalCharacterCreationsForLoad(sharedCharacters, localCharacters)
+          const sharedSelectedId =
+            shared.selectedId && mergedSharedCharacters.some((ch) => ch.id === shared.selectedId)
+              ? shared.selectedId
+              : null
+          const nextSelectedId = sharedSelectedId ?? mergedSharedCharacters[0]?.id ?? null
           set({
-            characters: mergePendingLocalTraitChoices(sharedCharacters, localCharacters),
+            characters: mergePendingLocalTraitChoices(mergedSharedCharacters, localCharacters),
             selectedId:
               nextSelectedId && isCharacterTombstoned(nextSelectedId)
-                ? (sharedCharacters[0]?.id ?? null)
-                : nextSelectedId,
+                ? (mergedSharedCharacters[0]?.id ?? null)
+                : localCharacters.some((ch) => ch.id === get().selectedId && isLocalCharacterCreationPending(ch.id))
+                  ? get().selectedId
+                  : nextSelectedId,
           })
           if (shared.updatedAt != null) lastLocalCharactersWriteAt = shared.updatedAt
         },
+        saveSharedNow: publishCharactersSnapshot,
         select: (id) => set({ selectedId: id }),
         add: (name?: string) => {
           const c = emptyCharacter()
           const trimmed = name?.trim()
           if (trimmed) c.name = trimmed
+          if (isPlayerPort()) markLocalCharacterCreationPending(c.id)
           set((s) => ({ characters: [...s.characters, c], selectedId: c.id }))
           saveCharacters()
           return c.id
@@ -929,6 +1035,7 @@ export const useCharacterStore = create<CharacterState>()(
             combatBuffs: character.combatBuffs ?? {},
             visibleToPlayers: character.visibleToPlayers ?? true,
           })
+          if (isPlayerPort()) markLocalCharacterCreationPending(imported.id)
           set((s) => ({ characters: [...s.characters, imported], selectedId: id }))
           saveCharacters()
           return id
@@ -1307,13 +1414,14 @@ export const useCharacterStore = create<CharacterState>()(
           const c = get().characters.find((x) => x.id === charId)
           const skill = c?.combatSkills.find((s) => s.id === skillId)
           if (!c || !skill || skill.remaining <= 0) return false
-          if (!get().spendQi(charId, 1)) return false
-          updateChar(charId, (ch) =>
-            mapSkill(ch, skillId, (s) => ({
+          if ((c.qi ?? 0) < 1) return false
+          updateChar(charId, (ch) => ({
+            ...mapSkill(ch, skillId, (s) => ({
               ...s,
               remaining: Math.max(0, s.remaining - 1),
             })),
-          )
+            qi: Math.max(0, (ch.qi ?? 0) - 1),
+          }))
           return true
         },
       }

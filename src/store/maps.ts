@@ -1,12 +1,20 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { defaultTokenSizeForMap, realignTokensToGrid, snapToCellCenter } from '../lib/gridCombat'
+import { defaultTokenSizeForMap, realignTokensToGrid, snapTokenToGridCenter } from '../lib/gridCombat'
 import { applyGridDetectPatch, type GridDetectResult } from '../lib/gridDetect'
 import { enemyTemplateToTokenPatch, type EnemyTemplate } from '../lib/enemyPool'
 import { putImage, deleteImage, pruneOrphanImages } from '../lib/imageStore'
 import { loadSharedResource, saveSharedResource } from '../lib/sharedApi'
 import { canWriteSharedState, isPlayerPort } from '../lib/appMode'
 import { decideApply, type MonotonicState } from '../lib/monotonicGuard'
+import {
+  creatureSizeToTokenSize,
+  normalizeCreatureSize,
+  normalizeCreatureTypes,
+  sizeFromTokenSize,
+  type CreatureSize,
+  type CreatureType,
+} from '../lib/monsterTypes'
 function uid(): string {
   return Math.random().toString(36).slice(2, 10)
 }
@@ -51,7 +59,11 @@ export function mergePlayerTokenCombatFields(localMaps: BattleMap[], sharedMaps:
           restrainedTurns: sharedToken.restrainedTurns,
           vulnerableTurns: sharedToken.vulnerableTurns,
           noMoveTurns: sharedToken.noMoveTurns,
+          illusionDanceTurns: sharedToken.illusionDanceTurns,
           huntingMarkStacks: sharedToken.huntingMarkStacks,
+          creatureTypes: sharedToken.creatureTypes,
+          creatureSize: sharedToken.creatureSize,
+          size: sharedToken.size,
         }
       }),
     }
@@ -81,6 +93,8 @@ export interface Token {
   emoji: string
   size: number // 直径（格数的倍数，1 = 一格）
   type: 'player' | 'enemy' | 'npc' | 'obstacle'
+  creatureTypes?: CreatureType[]
+  creatureSize?: CreatureSize
   characterId?: string // 关联的角色（点击 token 即可调出其技能栏）
   hp?: number // 生命值（用于未关联角色的敌人/NPC）
   maxHp?: number
@@ -104,6 +118,8 @@ export interface Token {
   vulnerableTurns?: number
   /** 禁止移动剩余回合，0 或未设置 = 可移动 */
   noMoveTurns?: number
+  /** 迷幻舞步剩余回合，0 或未设置 = 未迷幻 */
+  illusionDanceTurns?: number
   /** 逐风者 · 狩猎印记层数（0–4） */
   huntingMarkStacks?: number
   /** 来自怪物池的模板 id */
@@ -149,6 +165,10 @@ function normalizeToken(raw: unknown): Token {
   const t = (raw ?? {}) as Partial<Token>
   const type = TOKEN_TYPES.includes(t.type as Token['type']) ? (t.type as Token['type']) : 'enemy'
   const preset = TOKEN_PRESETS[type]
+  const rawSize = Number.isFinite(t.size) && (t.size as number) > 0 ? (t.size as number) : 1
+  const creatureSize =
+    normalizeCreatureSize(t.creatureSize) ?? (type === 'enemy' || type === 'npc' ? sizeFromTokenSize(rawSize) : undefined)
+  const creatureTypes = normalizeCreatureTypes(t.creatureTypes)
   return {
     ...t,
     id: typeof t.id === 'string' && t.id ? t.id : uid(),
@@ -157,8 +177,10 @@ function normalizeToken(raw: unknown): Token {
     y: Number.isFinite(t.y) ? (t.y as number) : 0,
     color: typeof t.color === 'string' && t.color ? t.color : preset.color,
     emoji: typeof t.emoji === 'string' && t.emoji ? t.emoji : preset.emoji,
-    size: Number.isFinite(t.size) && (t.size as number) > 0 ? (t.size as number) : 1,
+    size: creatureSize ? creatureSizeToTokenSize(creatureSize) : rawSize,
     type,
+    creatureTypes: creatureTypes.length > 0 ? creatureTypes : undefined,
+    creatureSize,
   }
 }
 
@@ -332,8 +354,9 @@ export const useMapStore = create<MapState>()(
         if (!map) return
         const preset = TOKEN_PRESETS[type]
         const defaultHp = type === 'enemy' ? 20 : type === 'npc' ? 12 : undefined
-        const spawn = snapToCellCenter(map.width / 2, map.height / 2, map)
         const tokenSize = defaultTokenSizeForMap(map)
+        const creatureSize = type === 'enemy' || type === 'npc' ? '中型' : undefined
+        const spawn = snapTokenToGridCenter(map.width / 2, map.height / 2, { size: tokenSize, creatureSize }, map)
         const token: Token = {
           id: uid(),
           label: type === 'player' ? '玩家' : type === 'enemy' ? '敌人' : 'NPC',
@@ -343,6 +366,8 @@ export const useMapStore = create<MapState>()(
           emoji: preset.emoji,
           size: tokenSize,
           type,
+          creatureTypes: type === 'enemy' ? ['魔物'] : undefined,
+          creatureSize,
           hp: defaultHp,
           maxHp: defaultHp,
         }
@@ -362,7 +387,7 @@ export const useMapStore = create<MapState>()(
           table: { label: '翻倒的桌子', emoji: '▰', size: 2, color: '#92400e' },
         }
         const tpl = templates[kind] ?? templates.rock
-        const spawn = snapToCellCenter(map.width / 2, map.height / 2, map)
+        const spawn = snapTokenToGridCenter(map.width / 2, map.height / 2, { size: tpl.size }, map)
         const token: Token = {
           id: uid(),
           label: tpl.label,
@@ -385,8 +410,13 @@ export const useMapStore = create<MapState>()(
       addEnemyFromPool: (mapId, template) => {
         const map = get().maps.find((m) => m.id === mapId)
         if (!map) return null
-        const spawn = snapToCellCenter(map.width / 2, map.height / 2, map)
         const patch = enemyTemplateToTokenPatch(template)
+        const spawn = snapTokenToGridCenter(
+          map.width / 2,
+          map.height / 2,
+          { size: patch.size ?? defaultTokenSizeForMap(map), creatureSize: patch.creatureSize },
+          map,
+        )
         const token: Token = {
           id: uid(),
           label: patch.label ?? template.name,
@@ -399,6 +429,8 @@ export const useMapStore = create<MapState>()(
           hp: patch.hp,
           maxHp: patch.maxHp,
           poolId: patch.poolId,
+          creatureTypes: patch.creatureTypes,
+          creatureSize: patch.creatureSize,
           showHpOnToken: patch.showHpOnToken ?? true,
           showDetailOnToken: patch.showDetailOnToken ?? true,
         }
@@ -412,7 +444,8 @@ export const useMapStore = create<MapState>()(
         const map = get().maps.find((m) => m.id === mapId)
         if (!map) return
         const preset = TOKEN_PRESETS[type]
-        const spawn = snapToCellCenter(map.width / 2, map.height / 2, map)
+        const tokenSize = defaultTokenSizeForMap(map)
+        const spawn = snapTokenToGridCenter(map.width / 2, map.height / 2, { size: tokenSize }, map)
         const token: Token = {
           id: uid(),
           label: name,
@@ -420,7 +453,7 @@ export const useMapStore = create<MapState>()(
           y: spawn.y,
           color: preset.color,
           emoji,
-          size: defaultTokenSizeForMap(map),
+          size: tokenSize,
           type,
           characterId,
         }

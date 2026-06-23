@@ -196,7 +196,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '疾风连击',
     usage: 'perLongRest',
     description:
-      '当你对敌对角色施加倒地/击飞状态且对方豁免失败时，你可以无需消耗 AP，释放一个已准备好的技能或主武器攻击。该特性可使用 1 次；每提升 1 级，使用上限 +1。',
+      '当你对敌对角色施加倒地/击飞状态且对方豁免失败时，可以发动疾风连击。发动后，下一次已准备技能或基础射击不消耗 AP；释放后消耗 1 次使用次数。该特性长休可使用 1 次；每提升 1 级，使用上限 +1。',
     maxUsesAtRank: perLongRestPlusOne,
   },
   {
@@ -378,7 +378,7 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '疾风舞者',
     usage: 'perLongRest',
     description:
-      '当你将要进入负面状态而进行豁免鉴定成功后，你可以消耗 1 点气将飞空连击的 CD -1；若飞空连击已准备就绪，则可不消耗 AP 释放它。长休前 {uses} 次；每次升级 +1 次。',
+      '当你将要进入负面状态而进行豁免鉴定成功后，你可以将踏风连踢的 CD -1；若踏风连踢已准备就绪，则可不消耗 AP 释放它。长休前 {uses} 次；每次升级 +1 次。',
     maxUsesAtRank: perLongRestPlusOne,
   },
   {
@@ -849,8 +849,9 @@ export function maxQiForLevel(level: number): number {
 
 export function syncQiForCharacter(c: Character): Character {
   if (!isShadowDancer(c.charClass)) return { ...c, qi: undefined }
-  // TEMP: 气系统调试期间不按等级/当前值裁剪，统一给 99。
-  return { ...c, qi: 99 }
+  const max = maxQiForLevel(c.level)
+  const current = Number.isFinite(c.qi) ? (c.qi as number) : max
+  return { ...c, qi: Math.max(0, Math.min(max, current)) }
 }
 
 export function metaChoiceLabel(key: MetaChoiceKey): string {

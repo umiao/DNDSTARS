@@ -9,6 +9,7 @@ import {
   loadEagleEyeIcon,
   loadHuntingMarkIcon,
   loadIgniteIcon,
+  loadIllusionDanceIcon,
   loadKnockbackIcon,
   loadOutOfBreathIcon,
   loadPoisonIcon,
@@ -35,24 +36,24 @@ import {
 } from '../../lib/gridCombat'
 
 const TOKEN_MOVE_DURATION = TOKEN_MOVE_DURATION_S
-// [T8/AC5 · D5] 拖拽位移低于该像素阈值视为点击/抖动，不提交移动/广播。
+// Treat tiny drags as click jitter; do not submit movement or broadcast.
 const TOKEN_DRAG_THRESHOLD_PX = 4
 
-// [T9/AC3 · D11] 状态特效动画统一节流帧率上限。
-// 中毒(~19-23 径向渐变圆)/燃烧/眩晕等常驻动画原本以满 RAF(~60fps) 运行，多 token 叠加掉帧。
-// 这些特效是慢速脉动/飘动，30fps 视觉上等效但 GPU/重绘开销约减半。
+// Cap status effect animation frame rate.
+// Poison/burning/stun effects used to run at full RAF; multiple tokens could drop frames.
+// These effects are slow pulses/drifts, so 30fps keeps the look while reducing repaint cost.
 const STATUS_ANIM_FPS = 30
 
 /**
- * [T9/AC3 · D11] 受控的 Konva 状态特效动画 Hook。
- * - active=false 时不启动动画（gate start/stop on 状态在场/可见性）；
- *   各状态特效组件本身已按 active 状态条件渲染，这里再显式 gate 一层，
- *   即使组件已挂载，只在 active 时驱动动画，clear 时立即 stop。
- * - 用 fps 上限节流回调：仅当距上次渲染 ≥ 1/fps 才执行 callback，
- *   但传入的 frame.time 仍是真实经过时间，因此节流不会冻结正在进行的特效，
- *   只是渲染得更稀疏（更省）。
+ * Controlled Konva status effect animation hook.
+ * - active=false stops the animation immediately.
+ * - Status components are already conditionally rendered; this adds an explicit runtime gate.
+ * - Mounted components only animate while active, and clear stops the animation.
+ * - Frame-rate limiting skips redraws until the frame budget is reached.
+ * - frame.time is still real elapsed time, so throttling does not freeze effects.
+ * - The effect simply renders less often.
  *
- * getLayer 在每帧由调用方提供节点取 layer（ref 在挂载后才有值）。
+ * getLayer reads from refs after mount.
  */
 function useStatusAnimation(
   getLayer: () => Konva.Layer | null,
@@ -75,13 +76,13 @@ function useStatusAnimation(
     const start = () => {
       const layer = getLayer()
       if (!layer) {
-        // layer 尚未挂载（ref 在首帧可能为空），下一帧重试。
+        // Layer may not be mounted on the first frame; retry next frame.
         raf = requestAnimationFrame(start)
         return
       }
       anim = new Konva.Animation((frame) => {
         const time = frame?.time ?? 0
-        // 节流：未到帧预算则跳过本次重绘（frame.time 仍为真实时间，特效不冻结）。
+        // Skip redraws until the frame budget is reached.
         if (minDelta > 0 && time - lastRender < minDelta) return
         lastRender = time
         callbackRef.current(frame ? { time: frame.time } : null)
@@ -111,13 +112,13 @@ export interface AoeHighlight {
   cells: GridCell[]
   rangeCells?: GridCell[]
   valid: boolean
-  /** 深红色原始范围轮廓（圆形） */
+  /** Dark red original area outline (circle). */
   areaCircle?: {
     centerX: number
     centerY: number
     radiusPx: number
   }
-  /** 深红色原始范围轮廓（矩形/直线） */
+  /** Dark red original area outline (polygon/line). */
   areaPolygon?: number[]
   /** range：蓝色可选区；attack：黄色受击区 */
   variant?: 'attack' | 'range'
@@ -141,6 +142,7 @@ interface MapCanvasProps {
   map: BattleMap
   selectedTokenId: string | null
   onSelectToken: (id: string | null) => void
+  targetSelectTokenIds?: string[]
   measureMode?: boolean
   /** 每个 token 的生命值（用于显示血条） */
   hpByToken?: Record<string, { hp: number; max: number; temp?: number }>
@@ -148,39 +150,41 @@ interface MapCanvasProps {
   moveSelectMode?: boolean
   moveCircle?: MoveCircle
   onMoveSelect?: (point: { x: number; y: number }) => void
-  /** 圆形 AOE 选区：高亮格子 + 点击确认 */
+  /** Circular AOE selection: highlighted cells plus click confirm. */
   aoeSelectMode?: boolean
   aoeHighlight?: AoeHighlight
   rangedRangeCells?: GridCell[]
   onAoePreviewCell?: (cell: GridCell | null) => void
   onAoeConfirm?: (cell: GridCell) => void
   onAoeCancel?: () => void
-  /** tokenId → 地图 token 上的状态角标 */
+  /** tokenId to token status badges. */
   tokenBadges?: Record<
     string,
     {
       doubleArrow?: boolean
       eagleEye?: boolean
+      galeCombo?: boolean
       silentDraw?: boolean
       preciseStrike?: boolean
       calmMind?: boolean
       calmSpiritStacks?: number
       outOfBreath?: boolean
       huntingMarkStacks?: number
+      illusionDance?: boolean
     }
   >
   tokenHoverLabels?: Record<string, string>
   projectiles?: MapProjectile[]
-  /** 已阵亡 token（灰显） */
+  /** Defeated tokens are dimmed. */
   defeatedTokenIds?: string[]
   /** 战斗中禁止拖动的 token */
   lockDragTokenIds?: string[]
   /** 底图自带网格，token 尺寸贴合格子 */
   builtinGrid?: boolean
-  /** DM：拖拽平移网格对齐底图 */
+  /** DM grid offset drag mode. */
   gridAdjustMode?: boolean
   onGridOffsetChange?: (offsetX: number, offsetY: number) => void
-  /** 调节格子大小时临时显示网格 */
+  /** Temporarily show grid while changing grid size. */
   gridSizePreview?: boolean
   onGridSizeChange?: (gridSize: number) => void
   onBlankContextMenu?: () => void
@@ -220,7 +224,7 @@ function isMapTokenNode(node: Konva.Node | null): boolean {
   return false
 }
 
-/** 网格线位置：offset + n·step，覆盖 [0, length] */
+/** Grid line positions: offset + n * step, covering [0, length]. */
 function gridLinePositions(length: number, offset: number, step: number): number[] {
   if (step <= 0) return []
   const positions: number[] = []
@@ -233,10 +237,10 @@ function gridLinePositions(length: number, offset: number, step: number): number
   return positions
 }
 
-/** Token 右上缘角标：锚在圆环 1~2 点方向，向右排，每行最多 3 个 */
+/** Token upper-right badges: anchored near 1-2 o'clock, flowing right, max 3 per row. */
 const DOUBLE_ARROW_BADGE_RATIO = 0.4
 const RIGHT_BADGE_MAX_COLS = 3
-/** 首个角标中心：贴近 Token 右上边框（红圈标注位） */
+/** First badge center sits near the token upper-right border. */
 const RIGHT_BADGE_ANCHOR_X_RATIO = 0.56
 const RIGHT_BADGE_ANCHOR_Y_RATIO = -0.84
 
@@ -309,7 +313,7 @@ function DoubleArrowBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex
             strokeWidth={fallbackStrokeW}
           />
           <Text
-            text="×2"
+            text={'\u00d72'}
             fontSize={Math.max(9, r * 0.95)}
             fill="#bbf7d0"
             fontStyle="bold"
@@ -322,6 +326,38 @@ function DoubleArrowBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex
           />
         </>
       )}
+    </Group>
+  )
+}
+
+function GaleComboBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex?: number }) {
+  const size = rightBadgeSize(radius)
+  const r = size / 2
+  const { x, y } = rightBadgeGridPos(radius, size, gridIndex)
+  return (
+    <Group x={x} y={y} listening={false}>
+      <Circle
+        radius={r}
+        fill="rgba(49,46,129,0.68)"
+        stroke="#67e8f9"
+        strokeWidth={tokenLineWidth(radius, 1.5)}
+        shadowBlur={5 * tokenScale(radius)}
+        shadowColor="rgba(103,232,249,0.6)"
+      />
+      <Text
+        text="0"
+        width={size}
+        height={size}
+        offsetX={r}
+        offsetY={r}
+        fontSize={Math.max(10, r * 1.35)}
+        fontStyle="bold"
+        fill="#e0f2fe"
+        stroke="#312e81"
+        strokeWidth={tokenLineWidth(radius, 0.25)}
+        align="center"
+        verticalAlign="middle"
+      />
     </Group>
   )
 }
@@ -383,8 +419,9 @@ const EAGLE_EYE_RING_COLOR = '#0ea5e9'
 const CALM_MIND_RING_COLOR = '#14b8a6'
 const OUT_OF_BREATH_RING_COLOR = '#f97316'
 const HUNTING_MARK_RING_COLOR = '#f59e0b'
+const ILLUSION_DANCE_RING_COLOR = '#d946ef'
 
-/** 状态角标：Konva 绘制加粗描边，裁剪 PNG 外缘白晕 */
+/** Status icon badge with a thick ring and clipped PNG halo. */
 function RingedStatusIconBadge({
   radius,
   gridIndex = 0,
@@ -438,7 +475,7 @@ function RingedStatusIconBadge({
   )
 }
 
-/** 点燃角标（燃烧/点燃共用：红圈火焰图） */
+/** Ignite badge shared by burning/ignite. */
 function IgniteBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex?: number }) {
   const [iconCanvas, setIconCanvas] = useState<HTMLCanvasElement | null>(null)
 
@@ -464,7 +501,7 @@ function IgniteBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex?: nu
   )
 }
 
-/** 鹰眼角标（激活时显示） */
+/** Eagle eye badge. */
 function EagleEyeBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex?: number }) {
   const [iconCanvas, setIconCanvas] = useState<HTMLCanvasElement | null>(null)
 
@@ -569,6 +606,32 @@ function HuntingMarkBadge({
       gridIndex={gridIndex}
       iconCanvas={iconCanvas}
       ringColor={HUNTING_MARK_RING_COLOR}
+    />
+  )
+}
+
+function IllusionDanceBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex?: number }) {
+  const [iconCanvas, setIconCanvas] = useState<HTMLCanvasElement | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    loadIllusionDanceIcon().then((c) => {
+      if (!cancelled) setIconCanvas(c)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (!iconCanvas) return null
+
+  return (
+    <RingedStatusIconBadge
+      radius={radius}
+      gridIndex={gridIndex}
+      iconCanvas={iconCanvas}
+      ringColor={ILLUSION_DANCE_RING_COLOR}
+      backgroundFill="#1e1b4b"
     />
   )
 }
@@ -717,6 +780,7 @@ export default function MapCanvas({
   map,
   selectedTokenId,
   onSelectToken,
+  targetSelectTokenIds = [],
   measureMode = false,
   hpByToken,
   moveSelectMode = false,
@@ -759,7 +823,7 @@ export default function MapCanvas({
   const [deleteDrag, setDeleteDrag] = useState<{ start: Point; current: Point } | null>(null)
   const fittedRef = useRef(false)
 
-  // 测距状态（图片坐标）：已确定的线段 + 正在放置的起点/光标
+  // Measurement state in image coordinates: fixed segments plus pending/cursor points.
   const [segments, setSegments] = useState<{ a: Point; b: Point }[]>([])
   const [pending, setPending] = useState<Point | null>(null)
   const [cursor, setCursor] = useState<Point | null>(null)
@@ -771,7 +835,40 @@ export default function MapCanvas({
     return preview ? { ...token, x: preview.x, y: preview.y } : token
   }
 
-  // 退出测距模式时清除全部测量线
+  const canDragToken = (token: Token): boolean =>
+    isDM &&
+    !measureMode &&
+    !deleteSelectMode &&
+    !gridAdjustMode &&
+    !lockDragTokenIds.includes(token.id)
+
+  const previewTokenDrag = (token: Token, x: number, y: number) => {
+    setDragPreviewPositions((prev) => ({
+      ...prev,
+      [token.id]: { x, y },
+    }))
+  }
+
+  const clearTokenDragPreview = (tokenId: string) => {
+    setDragPreviewPositions((prev) => {
+      if (!prev[tokenId]) return prev
+      const next = { ...prev }
+      delete next[tokenId]
+      return next
+    })
+  }
+
+  const commitTokenDrag = (token: Token, x: number, y: number) => {
+    const snapped = resolveTokenDropPosition(x, y, token, map)
+    const pos = shouldSnapTokenOnDrop(token, map)
+      ? resolveFreeDropCell(snapped.x, snapped.y, token.id, map)
+      : snapped
+    previewTokenDrag(token, pos.x, pos.y)
+    updateToken(map.id, token.id, pos)
+    window.requestAnimationFrame(() => clearTokenDragPreview(token.id))
+  }
+
+  // Clear measurement lines when leaving measurement mode.
   useEffect(() => {
     if (!measureMode) {
       setSegments([])
@@ -814,7 +911,7 @@ export default function MapCanvas({
     return () => window.removeEventListener('keydown', onKey)
   }, [gridAdjustMode, map.gridOffsetX, map.gridOffsetY, onGridOffsetChange])
 
-  // 网格对齐：拖拽平移（全局监听松开）
+  // Grid alignment: drag offset with global mouse-up listener.
   useEffect(() => {
     if (!gridAdjustMode) {
       gridDragRef.current = null
@@ -870,11 +967,11 @@ export default function MapCanvas({
   const measurePoint = (raw: Point): Point =>
     snapMeasure ? snapToCellCenter(raw.x, raw.y, map) : raw
 
-  // 从 IndexedDB 取图片
-  // 单一所有者：本 effect 独占管理 blob URL 的创建/解码/释放，
-  // 不再由 useImage 与手动 createObjectURL 双重托管同一 URL（避免快速切图时的撕裂/闪烁）。
-  // URL 在图片 onload（解码完成、不再需要 URL）后立即 revoke；
-  // 切图/卸载时若尚未解码，则在 cleanup 中取消加载并 revoke，杜绝泄漏。
+  // Load map image from IndexedDB.
+  // This effect owns blob URL creation, decoding, and release.
+  // Avoid dual ownership between useImage and manual object URLs.
+  // Revoke URL after image decode completes.
+  // If decode has not completed, cleanup revokes the URL to avoid leaks.
   useEffect(() => {
     let cancelled = false
     let objectUrl = ''
@@ -886,7 +983,7 @@ export default function MapCanvas({
       img.onload = () => {
         if (cancelled) return
         setImage(img ?? undefined)
-        // 解码完成后 URL 已不再需要，立即释放。
+        // Decode finished; the object URL is no longer needed.
         URL.revokeObjectURL(objectUrl)
         objectUrl = ''
       }
@@ -904,7 +1001,7 @@ export default function MapCanvas({
         img.onload = null
         img.onerror = null
       }
-      // 若图片尚未解码（onload 未触发），cleanup 仍需 revoke 以防泄漏。
+      // If image has not decoded yet, cleanup still revokes the URL.
       if (objectUrl) {
         URL.revokeObjectURL(objectUrl)
         objectUrl = ''
@@ -924,13 +1021,13 @@ export default function MapCanvas({
     return () => ro.disconnect()
   }, [])
 
-  // [T8/AC6 · D6] 切换地图时重置 fitted 标记，使新地图进入时自适应一次。
-  // 不用 key={map.id} 重挂载（会撕裂 Konva.Animation 实例、拖拽预览、视图/缩放、hover/测距状态）。
+  // Reset fitted flag when switching maps so each map auto-fits once.
+  // Avoid remounting the stage, which would tear animations and transient interaction state.
   useEffect(() => {
     fittedRef.current = false
   }, [map.id])
 
-  // 首次加载时自适应缩放使整张图可见（每张地图进入时各自适应一次，由上面的 effect 重置 fittedRef）
+  // Auto-fit once after loading each map image.
   useEffect(() => {
     if (!image || fittedRef.current || size.width === 0) return
     const scale = Math.min(size.width / map.width, size.height / map.height) * 0.95
@@ -1069,7 +1166,7 @@ export default function MapCanvas({
     }
   }
 
-  const inv = 1 / view.scale // 让线宽/文字不随缩放变化
+  const inv = 1 / view.scale // Keep strokes/text size stable while zooming.
 
   return (
     <div
@@ -1098,7 +1195,7 @@ export default function MapCanvas({
         draggable={!measureMode && !moveSelectMode && !aoeSelectMode && !gridAdjustMode && !deleteSelectMode}
         onWheel={handleWheel}
         onDragEnd={(e) => {
-          // 仅当拖动的是舞台本身（平移）时更新视图
+          // Only update viewport when dragging the stage itself.
           if (e.target === e.target.getStage()) {
             setView((v) => ({ ...v, x: e.target.x(), y: e.target.y() }))
           }
@@ -1146,7 +1243,7 @@ export default function MapCanvas({
             return
           }
           if (measureMode) {
-            if (e.evt.button !== 0) return // 仅左键放点
+            if (e.evt.button !== 0) return // Left button only.
             const raw = relativePoint(stage)
             if (!raw) return
             const p = measurePoint(raw)
@@ -1286,18 +1383,13 @@ export default function MapCanvas({
             <TokenNode
               key={`body-${t.id}`}
               renderMode="body"
-              token={t}
+              token={displayToken(t)}
               gridSize={map.gridSize}
               builtinGrid={builtinGrid}
               selected={t.id === selectedTokenId}
+              targetSelected={targetSelectTokenIds.includes(t.id)}
               defeated={defeated}
-              draggable={
-                isDM &&
-                !measureMode &&
-                !deleteSelectMode &&
-                !gridAdjustMode &&
-                !lockDragTokenIds.includes(t.id)
-              }
+              draggable={canDragToken(t)}
               hp={hpByToken?.[t.id]}
               showHpBar={
                 !!hpByToken?.[t.id] &&
@@ -1305,49 +1397,29 @@ export default function MapCanvas({
               }
               doubleArrowBadge={tokenBadges[t.id]?.doubleArrow}
               eagleEyeBadge={tokenBadges[t.id]?.eagleEye}
+              galeComboBadge={tokenBadges[t.id]?.galeCombo}
               silentDrawBadge={tokenBadges[t.id]?.silentDraw}
               preciseStrikeBadge={tokenBadges[t.id]?.preciseStrike}
               calmMindBadge={tokenBadges[t.id]?.calmMind}
               calmSpiritStacks={tokenBadges[t.id]?.calmSpiritStacks}
               outOfBreathBadge={tokenBadges[t.id]?.outOfBreath}
               huntingMarkStacks={tokenBadges[t.id]?.huntingMarkStacks}
+              illusionDanceBadge={tokenBadges[t.id]?.illusionDance}
               hoverLabel={hoveredTokenId === t.id ? tokenHoverLabels[t.id] : undefined}
               onHoverChange={(hovered) =>
-                // [T8/AC7 · D7] 统一为函数式更新，避免布尔 + 函数式混用导致的悬停闪烁竞态。
+                // Use functional updates to avoid hover flicker races.
                 setHoveredTokenId((id) => (hovered ? t.id : id === t.id ? null : id))
               }
               onSelect={() => {
-                if (deleteSelectMode) return
+                if (deleteSelectMode || aoeSelectMode) return
                 onSelectToken(t.id)
               }}
-              onDragEnd={(x, y) => {
-                const snapped = resolveTokenDropPosition(x, y, t, map)
-                // [T8/AC3 · D3] 吸附格心时拒绝叠放：若目标格被占用，改放到最近空格。
-                const pos = shouldSnapTokenOnDrop(t, map)
-                  ? resolveFreeDropCell(snapped.x, snapped.y, t.id, map)
-                  : snapped
-                updateToken(map.id, t.id, pos)
-                setDragPreviewPositions((prev) => {
-                  if (!prev[t.id]) return prev
-                  const next = { ...prev }
-                  delete next[t.id]
-                  return next
-                })
-              }}
-              onDragMove={(x, y) => {
-                setDragPreviewPositions((prev) => ({
-                  ...prev,
-                  [t.id]: { x, y },
-                }))
-              }}
+              instantPosition={!!dragPreviewPositions[t.id]}
+              onDragEnd={(x, y) => commitTokenDrag(t, x, y)}
+              onDragMove={(x, y) => previewTokenDrag(t, x, y)}
               onDragCancel={() => {
-                // [T8/AC5 · D5] 子阈值拖拽：仅清理预览，不写入/广播。
-                setDragPreviewPositions((prev) => {
-                  if (!prev[t.id]) return prev
-                  const next = { ...prev }
-                  delete next[t.id]
-                  return next
-                })
+                // Sub-threshold drag: clear preview without writing or broadcasting.
+                clearTokenDragPreview(t.id)
               }}
             />
             )
@@ -1368,8 +1440,9 @@ export default function MapCanvas({
                 gridSize={map.gridSize}
                 builtinGrid={builtinGrid}
                 selected={t.id === selectedTokenId}
+                targetSelected={targetSelectTokenIds.includes(t.id)}
                 defeated={defeated}
-                draggable={false}
+                draggable={canDragToken(t)}
                 hp={hpByToken?.[t.id]}
                 showHpBar={
                   !!hpByToken?.[t.id] &&
@@ -1377,17 +1450,21 @@ export default function MapCanvas({
                 }
                 doubleArrowBadge={tokenBadges[t.id]?.doubleArrow}
                 eagleEyeBadge={tokenBadges[t.id]?.eagleEye}
+                galeComboBadge={tokenBadges[t.id]?.galeCombo}
                 silentDrawBadge={tokenBadges[t.id]?.silentDraw}
                 preciseStrikeBadge={tokenBadges[t.id]?.preciseStrike}
                 calmMindBadge={tokenBadges[t.id]?.calmMind}
                 calmSpiritStacks={tokenBadges[t.id]?.calmSpiritStacks}
                 outOfBreathBadge={tokenBadges[t.id]?.outOfBreath}
                 huntingMarkStacks={tokenBadges[t.id]?.huntingMarkStacks}
+                illusionDanceBadge={tokenBadges[t.id]?.illusionDance}
                 hoverLabel={hoveredTokenId === t.id ? tokenHoverLabels[t.id] : undefined}
                 onHoverChange={() => undefined}
                 onSelect={() => undefined}
                 instantPosition={!!dragPreviewPositions[t.id]}
-                onDragEnd={() => undefined}
+                onDragEnd={(x, y) => commitTokenDrag(t, x, y)}
+                onDragMove={(x, y) => previewTokenDrag(t, x, y)}
+                onDragCancel={() => clearTokenDragPreview(t.id)}
               />
             )
           })}
@@ -1403,8 +1480,9 @@ export default function MapCanvas({
                 gridSize={map.gridSize}
                 builtinGrid={builtinGrid}
                 selected={t.id === selectedTokenId}
+                targetSelected={targetSelectTokenIds.includes(t.id)}
                 defeated={defeated}
-                draggable={false}
+                draggable={canDragToken(t)}
                 hp={hpByToken?.[t.id]}
                 showHpBar={
                   !!hpByToken?.[t.id] &&
@@ -1412,17 +1490,21 @@ export default function MapCanvas({
                 }
                 doubleArrowBadge={tokenBadges[t.id]?.doubleArrow}
                 eagleEyeBadge={tokenBadges[t.id]?.eagleEye}
+                galeComboBadge={tokenBadges[t.id]?.galeCombo}
                 silentDrawBadge={tokenBadges[t.id]?.silentDraw}
                 preciseStrikeBadge={tokenBadges[t.id]?.preciseStrike}
                 calmMindBadge={tokenBadges[t.id]?.calmMind}
                 calmSpiritStacks={tokenBadges[t.id]?.calmSpiritStacks}
                 outOfBreathBadge={tokenBadges[t.id]?.outOfBreath}
                 huntingMarkStacks={tokenBadges[t.id]?.huntingMarkStacks}
+                illusionDanceBadge={tokenBadges[t.id]?.illusionDance}
                 hoverLabel={hoveredTokenId === t.id ? tokenHoverLabels[t.id] : undefined}
                 onHoverChange={() => undefined}
                 onSelect={() => undefined}
                 instantPosition={!!dragPreviewPositions[t.id]}
-                onDragEnd={() => undefined}
+                onDragEnd={(x, y) => commitTokenDrag(t, x, y)}
+                onDragMove={(x, y) => previewTokenDrag(t, x, y)}
+                onDragCancel={() => clearTokenDragPreview(t.id)}
               />
             )
           })}
@@ -1487,8 +1569,8 @@ function MeasureLine({
 }) {
   const feet = cells * DND_FEET_PER_CELL
   const label = snapMeasure
-    ? `${cells} 格 / ${feet} 尺`
-    : `${cells.toFixed(1)} 格 / ${feet.toFixed(1)} 尺`
+    ? `${cells} \u683c / ${feet} \u5c3a`
+    : `${cells.toFixed(1)} \u683c / ${feet.toFixed(1)} \u5c3a`
   const degenerate = measurePointsEqual(a, b)
   const handleDelete = onDelete
     ? (e: Konva.KonvaEventObject<PointerEvent>) => {
@@ -1686,18 +1768,21 @@ function TokenNode({
   gridSize,
   builtinGrid = false,
   selected,
+  targetSelected = false,
   defeated = false,
   draggable = true,
   hp,
   showHpBar = true,
   doubleArrowBadge = false,
   eagleEyeBadge = false,
+  galeComboBadge = false,
   silentDrawBadge = false,
   preciseStrikeBadge = false,
   calmMindBadge = false,
   calmSpiritStacks = 0,
   outOfBreathBadge = false,
   huntingMarkStacks = 0,
+  illusionDanceBadge = false,
   hoverLabel,
   onHoverChange,
   onSelect,
@@ -1711,24 +1796,27 @@ function TokenNode({
   gridSize: number
   builtinGrid?: boolean
   selected: boolean
+  targetSelected?: boolean
   defeated?: boolean
   draggable?: boolean
   hp?: { hp: number; max: number; temp?: number }
   showHpBar?: boolean
   doubleArrowBadge?: boolean
   eagleEyeBadge?: boolean
+  galeComboBadge?: boolean
   silentDrawBadge?: boolean
   preciseStrikeBadge?: boolean
   calmMindBadge?: boolean
   calmSpiritStacks?: number
   outOfBreathBadge?: boolean
   huntingMarkStacks?: number
+  illusionDanceBadge?: boolean
   hoverLabel?: string
   onHoverChange?: (hovered: boolean) => void
   onSelect: () => void
   onDragMove?: (x: number, y: number) => void
   onDragEnd: (x: number, y: number) => void
-  /** [T8/AC5] 低于阈值的拖拽（点击/抖动）取消：清理拖拽预览且不提交移动/广播 */
+  /** Cancel sub-threshold drags: clear preview without movement/broadcast. */
   onDragCancel?: () => void
   instantPosition?: boolean
 }) {
@@ -1777,10 +1865,15 @@ function TokenNode({
               ? '#4ade80'
               : outOfBreathBadge
                 ? OUT_OF_BREATH_RING_COLOR
-                : calmMindBadge
-                  ? CALM_MIND_RING_COLOR
-                  : token.color
+                : illusionDanceBadge
+                  ? ILLUSION_DANCE_RING_COLOR
+                  : calmMindBadge
+                    ? CALM_MIND_RING_COLOR
+                    : token.color
   const barW = radius * 2
+  const isDragonEmoji = token.emoji === '\u{1f409}' || token.emoji === '\u{1f432}'
+  const emojiFontScale = isDragonEmoji ? 0.94 : 1
+  const emojiOffsetY = isDragonEmoji ? radius * 0.07 : 0
 
   useLayoutEffect(() => {
     const node = groupRef.current
@@ -1805,14 +1898,14 @@ function TokenNode({
 
     const dist = Math.hypot(node.x() - token.x, node.y() - token.y)
     if (dist < 1) {
-      // [T8/AC8 · D10] 已到位前也先停掉任何在途补间，避免残留动画把节点拉走。
+      // Stop any in-flight tween before repositioning immediately.
       reconcileTweenRef.current?.destroy()
       reconcileTweenRef.current = null
       node.position({ x: token.x, y: token.y })
       return
     }
 
-    // [T8/AC8 · D10] 启动新补间前，取消/销毁上一个在途补间，杜绝叠加动画。
+    // Cancel and destroy previous tween before starting a new one.
     reconcileTweenRef.current?.destroy()
     const tween = new Konva.Tween({
       node,
@@ -1908,6 +2001,9 @@ function TokenNode({
             {eagleEyeBadge && (
               <EagleEyeBadge radius={radius} gridIndex={grid++} />
             )}
+            {galeComboBadge && (
+              <GaleComboBadge radius={radius} gridIndex={grid++} />
+            )}
             {silentDrawBadge && (
               <SilentDrawBadge radius={radius} gridIndex={grid++} />
             )}
@@ -1924,7 +2020,7 @@ function TokenNode({
               <StatusTurnBadge
                 radius={radius}
                 gridIndex={grid++}
-                emoji="★"
+                emoji={'\u2726'}
                 turns={token.stunTurns!}
                 stroke="#facc15"
                 fill="#fef9c3"
@@ -1952,6 +2048,9 @@ function TokenNode({
               })()}
             {outOfBreathBadge && (
               <OutOfBreathBadge radius={radius} gridIndex={grid++} />
+            )}
+            {illusionDanceBadge && (
+              <IllusionDanceBadge radius={radius} gridIndex={grid++} />
             )}
             {huntingMarkStacks > 0 &&
               (() => {
@@ -2054,7 +2153,7 @@ function TokenNode({
         const y = e.target.y()
         const start = dragStartRef.current
         dragStartRef.current = null
-        // [T8/AC5 · D5] 位移小于阈值（点击/抖动）：不提交移动/广播，回弹到原位并清理预览。
+        // Sub-threshold drag: do not submit movement or broadcast; snap back and clear preview.
         if (start && Math.hypot(x - start.x, y - start.y) < TOKEN_DRAG_THRESHOLD_PX) {
           e.target.position({ x: token.x, y: token.y })
           onDragCancel?.()
@@ -2069,6 +2168,17 @@ function TokenNode({
           stroke="#a78bfa"
           strokeWidth={selectedStrokeW}
           dash={tokenDash(radius, [8, 6])}
+          listening={false}
+        />
+      )}
+      {targetSelected && (
+        <Circle
+          radius={radius + selectedGap * 1.55}
+          stroke="#facc15"
+          strokeWidth={Math.max(2, selectedStrokeW * 0.9)}
+          dash={tokenDash(radius, [5, 4])}
+          shadowBlur={8 * scale}
+          shadowColor="rgba(250,204,21,0.85)"
           listening={false}
         />
       )}
@@ -2144,7 +2254,7 @@ function TokenNode({
         </Group>
       )}
 
-      {/* 生命条（Token 上方） */}
+      {/* Health bar above token */}
       {renderMode !== 'body' && showHpBar && hpPct !== null && (
         <Group y={-radius - 12}>
           <Rect x={-barW / 2} width={barW} height={6} cornerRadius={3} fill="rgba(10,11,22,0.85)" />
@@ -2192,7 +2302,8 @@ function TokenNode({
       )}
       <Text
         text={token.emoji}
-        fontSize={radius}
+        y={emojiOffsetY}
+        fontSize={radius * emojiFontScale}
         width={radius * 2}
         height={radius * 2}
         offsetX={radius}
@@ -2216,6 +2327,9 @@ function TokenNode({
             {eagleEyeBadge && (
               <EagleEyeBadge radius={radius} gridIndex={grid++} />
             )}
+            {galeComboBadge && (
+              <GaleComboBadge radius={radius} gridIndex={grid++} />
+            )}
             {silentDrawBadge && (
               <SilentDrawBadge radius={radius} gridIndex={grid++} />
             )}
@@ -2232,7 +2346,7 @@ function TokenNode({
               <StatusTurnBadge
                 radius={radius}
                 gridIndex={grid++}
-                emoji="★"
+                emoji={'\u2726'}
                 turns={token.stunTurns!}
                 stroke="#facc15"
                 fill="#fef9c3"
@@ -2260,6 +2374,9 @@ function TokenNode({
               })()}
             {outOfBreathBadge && (
               <OutOfBreathBadge radius={radius} gridIndex={grid++} />
+            )}
+            {illusionDanceBadge && (
+              <IllusionDanceBadge radius={radius} gridIndex={grid++} />
             )}
             {huntingMarkStacks > 0 &&
               (() => {
@@ -2389,7 +2506,7 @@ function BurningFlames({ radius }: { radius: number }) {
 
 const STUN_STAR_COUNT = 4
 
-/** 眩晕：头顶星星绕圈旋转 */
+/** Stun stars orbiting above the token. */
 function StunOrbitStars({ radius }: { radius: number }) {
   const groupRef = useRef<Konva.Group>(null)
   const starRefs = useRef<(Konva.Text | null)[]>([])
@@ -2422,7 +2539,7 @@ function StunOrbitStars({ radius }: { radius: number }) {
           ref={(el) => {
             starRefs.current[i] = el
           }}
-          text="★"
+          text={'\u2726'}
           fontSize={starSize}
           fill="#fde047"
           stroke="#ca8a04"
@@ -2607,7 +2724,7 @@ function OutOfBreathHeat({ radius }: { radius: number }) {
   )
 }
 
-/** 回合数角标（眩晕/中毒等），纳入右侧网格 */
+/** Turn-count badge for stun/poison/etc., part of right badge grid. */
 function StatusTurnBadge({
   radius,
   gridIndex,
@@ -2672,7 +2789,7 @@ const POISON_MIST_GRADIENT: (number | string)[] = [
   'rgba(30,120,30,0)',
 ]
 
-/** 程序化生成重叠雾团（各自慢速漂移，非同向风） */
+/** Procedurally generated overlapping fog puffs with slow independent drift. */
 function buildPoisonFogLayer(
   count: number,
   veilCount: number,
@@ -2720,7 +2837,7 @@ const POISON_FRONT_PARTICLES = buildPoisonFogLayer(20, 3, {
   spread: 0.4,
 })
 
-/** 雾气团整体透明度呼吸：60% ↔ 30%，各约 2 秒（完整周期 4 秒） */
+/** Fog opacity breathes from 60% to 30%, half cycle 2s, full cycle 4s. */
 function poisonFogPulseOpacity(t: number): number {
   return 0.45 + 0.15 * Math.cos(t * (Math.PI / 2))
 }
@@ -2746,7 +2863,7 @@ function animateFogLayer(
   node.opacity(slot.baseOpacity * opacityMul)
 }
 
-/** 毒云：径向渐变雾团叠加，各自慢速飘动 */
+/** Poison cloud: radial-gradient fog puffs with slow drifting. */
 function PoisonSmokeParticles({
   radius,
   particles,

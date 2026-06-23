@@ -6,6 +6,7 @@ import path from 'node:path'
 import {
   IMAGE_MAX_BYTES,
   STATE_MAX_BYTES,
+  atomicWriteJsonStateFreshLocked,
   atomicWriteLocked,
   authorizeStateWrite,
   enforceImageQuota,
@@ -171,7 +172,7 @@ async function handleSharedApi(req, res) {
         const body = await readBody(req)
         JSON.parse(body.toString('utf8'))
         // AC1：跨进程写锁 + 既有原子 temp+rename。
-        await atomicWriteLocked(filePath, body)
+        await atomicWriteJsonStateFreshLocked(filePath, body)
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
         res.end('{"ok":true}')
         return true
