@@ -60,3 +60,29 @@ describe('T10/AC1 — character currentHp mirrors to token.hp on the damage path
     expect(updated.currentHp).toBe(expectedHp)
   })
 })
+
+describe('Gale Combo ready state', () => {
+  it('keeps galeComboReady across endTurn until the next attack consumes it', async () => {
+    const { useCharacterStore } = await import('./characters')
+
+    const originalCharacters = useCharacterStore.getState().characters
+    const id = originalCharacters[0].id
+    useCharacterStore.setState({
+      characters: originalCharacters.map((character) =>
+        character.id === id
+          ? {
+              ...character,
+              combatBuffs: { ...character.combatBuffs, galeComboReady: true },
+            }
+          : character,
+      ),
+    })
+
+    useCharacterStore.getState().endTurn(id)
+
+    const updated = useCharacterStore.getState().characters.find((character) => character.id === id)!
+    expect(updated.combatBuffs?.galeComboReady).toBe(true)
+
+    useCharacterStore.setState({ characters: originalCharacters })
+  })
+})

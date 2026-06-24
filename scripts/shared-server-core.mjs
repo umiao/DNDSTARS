@@ -1,7 +1,7 @@
 // [T11] 共享服务端硬化核心：原子写锁 / 鉴权 / size cap / backlog cap / 图片配额 /
 // safeName 防碰撞 / API-404。两个服务端（vite-server.mjs + static-server.mjs）都从这里
 // import 同一份纯逻辑，避免双份漂移；纯函数集中在此以便 src/ 下的 vitest 直接 import .mjs。
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 // ── AC3：PUT body 上限 + backlog 回放上限 ────────────────────────────────────
@@ -20,7 +20,7 @@ export const IMAGE_COUNT_LIMIT = 64
 
 // ── AC1：跨进程写锁（lockfile + 陈旧超时，崩溃不死锁）───────────────────────
 // 锁陈旧超时：持锁进程崩溃后，锁最多被视为有效这么久；超过即判为陈旧可抢占。
-export const LOCK_STALE_MS = 10_000
+const LOCK_STALE_MS = 10_000
 // 抢锁时单次重试间隔与总等待上限。
 const LOCK_RETRY_MS = 20
 const LOCK_WAIT_MAX_MS = 5_000
@@ -159,24 +159,22 @@ function fnv1a(str) {
 // ── AC2：鉴权（默认关闭，opt-in）────────────────────────────────────────────
 // 服务端镜像 sharedApi.ts 的「玩家可写白名单」。flag 开启时，仅 DM 权威资源（不在白名单内，
 // 主要是 combat / player-action-ack）才要求 secret；白名单资源玩家照常可写。
-export const PLAYER_WRITABLE_STATE = new Set([
+const PLAYER_WRITABLE_STATE = new Set([
   'characters',
   'maps',
   'dodge',
+  'gale-combo',
   'stable-mind',
   'player-action',
+  'player-action-requests',
   'dice',
   'dice-events',
   'combat-log',
 ])
 
-export function sharedSecret() {
+function sharedSecret() {
   const value = process.env.STARS_SHARED_SECRET
   return value && value.length > 0 ? value : null
-}
-
-export function authEnabled() {
-  return sharedSecret() != null
 }
 
 /**
@@ -253,4 +251,3 @@ export function extractSecret(req) {
   return null
 }
 
-export { mkdir, readFile, rm, stat }

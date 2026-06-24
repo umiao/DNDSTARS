@@ -67,6 +67,7 @@
       const params = new URLSearchParams(window.location.search)
       const ORIGIN = window.location.origin
       const frameSides = Math.max(2, Math.min(100, Math.round(Number(params.get('sides')) || 6)))
+      const frameQty = Math.max(1, Math.min(12, Math.round(Number(params.get('qty')) || 1)))
 
       let boxPromise = null
       // requestId-level exactly-once: even if a request is posted twice (promise +
@@ -85,11 +86,29 @@
       function getBox() {
         if (!boxPromise) {
           if (frameSides === 4) installD4LabelScale()
+          const isD4 = frameSides === 4
+          const tableMultiplier = isD4
+            ? Math.min(1.45, 1 + Math.max(0, frameQty - 1) * 0.1)
+            : frameQty <= 3
+              ? 1
+              : Math.min(1.55, 1 + Math.max(0, frameQty - 3) * 0.12)
+          const scaleMultiplier = isD4
+            ? 0.92
+            : frameQty <= 3
+              ? 1.15
+              : Math.max(0.96, 1.06 - Math.max(0, frameQty - 4) * 0.02)
+          const visualScaleMultiplier = scaleMultiplier * 0.9
+          const container = document.getElementById('dice')
+          const dimensions = {
+            x: Math.max(320, Math.round((container?.clientWidth || 680) * tableMultiplier)),
+            y: Math.max(260, Math.round((container?.clientHeight || 420) * tableMultiplier)),
+          }
           // Single shared physics world; the wrapper serializes rolls (a second
           // roll while one is in flight rejects rather than corrupting delivery).
           boxPromise = createDiceBox('#dice', {
-            scale: frameSides === 4 ? DICE_D4_BASE_SCALE : DICE_BASE_SCALE,
-            theme: frameSides === 4 ? DICE_D4_THEME : undefined,
+            scale: (isD4 ? DICE_D4_BASE_SCALE : DICE_BASE_SCALE) * visualScaleMultiplier,
+            dimensions,
+            theme: isD4 ? DICE_D4_THEME : undefined,
           })
         }
         return boxPromise
@@ -196,6 +215,8 @@
         try {
           const box = await getBox()
           const notation = buildNotation(qty, sides, values)
+          box.clear()
+          await new Promise((resolve) => requestAnimationFrame(resolve))
           let outcome = await box.roll(notation)
           let vals =
             Array.isArray(outcome.values) && outcome.values.length > 0

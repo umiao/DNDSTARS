@@ -10,8 +10,7 @@ import {
 } from './combatTokens'
 import { dotDamageFor } from './statusDamage'
 
-// [T13] 回合引擎回归网：覆盖 LIVE 引擎（MapsPage 回合驱动 effect 实际调用的纯 helper），
-// 不触碰 dead 的 combatAuthority/combatResolutionPipeline/combatReactionHooks 框架。
+// 回合引擎回归网：覆盖 MapsPage 回合驱动 effect 实际调用的纯 helper。
 // 被测对象就是 MapsPage 回合驱动 effect 调用的 decideTurnAction / hasActionableActor /
 // pruneInitiativeForToken / pruneRecovery / dotDamageFor —— 这些是真实控制流的抽取，
 // 通过它们能在不挂载组件的前提下验证 T1 跳过、T2 重入/prune 恢复、T3 DOT/眩晕决策。

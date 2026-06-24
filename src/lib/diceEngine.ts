@@ -33,8 +33,8 @@ export const DICE_THEME: DiceColorset = {
 }
 
 export const DICE_ASSET_PATH = '/assets/dice-threejs/'
-export const DICE_BASE_SCALE = 69
-export const DICE_D4_BASE_SCALE = 66
+export const DICE_BASE_SCALE = 76
+export const DICE_D4_BASE_SCALE = 78
 export const DICE_D4_LABEL_SCALE = 1.25
 export const DICE_D4_THEME: DiceColorset = {
   ...DICE_THEME,
@@ -57,6 +57,7 @@ export interface DiceOutcome {
 
 export interface CreateDiceBoxOptions {
   scale?: number
+  dimensions?: { x: number; y: number }
   theme?: DiceColorset
   onComplete?: (outcome: DiceOutcome) => void
 }
@@ -85,7 +86,7 @@ export async function createDiceBox(
   container: string | HTMLElement,
   options: CreateDiceBoxOptions = {},
 ): Promise<DiceEngineBox> {
-  const { scale = DICE_BASE_SCALE, theme = DICE_THEME, onComplete } = options
+  const { scale = DICE_BASE_SCALE, dimensions, theme = DICE_THEME, onComplete } = options
 
   // Per-roll delivery slot. The Promise result is authoritative; the token
   // guards reject paths against a stale source from a prior roll.
@@ -103,6 +104,7 @@ export async function createDiceBox(
 
   const box = new DiceBox(container, {
     assetPath: DICE_ASSET_PATH,
+    dimensions,
     theme_customColorset: theme,
     theme_material: theme.material ?? 'glass',
     baseScale: scale,
@@ -124,6 +126,7 @@ export async function createDiceBox(
         pending = { token, notation, settle: resolve }
         // box.roll() returns undefined for malformed /
         // empty notation (the engine returns no Promise in that branch); guard it.
+        box.clearDice()
         Promise.resolve(box.roll(notation))
           .then((raw) => {
             if (raw == null) {

@@ -21,6 +21,8 @@ function uid(): string {
 
 let lastSharedMapsSnapshot = ''
 let lastSharedMapsUpdatedAt = 0
+let mapSaveSeq = 0
+let lastLocalMapsWriteAt = 0
 
 interface SharedMapsState {
   maps: BattleMap[]
@@ -71,13 +73,18 @@ export function mergePlayerTokenCombatFields(localMaps: BattleMap[], sharedMaps:
 }
 
 function publishMapsState(state: Pick<MapState, 'maps' | 'selectedId'>): void {
+  const seq = ++mapSaveSeq
   void (async () => {
     let maps = state.maps
     if (isPlayerPort()) {
       const shared = await loadSharedResource<SharedMapsState>('maps')
+      if (seq !== mapSaveSeq) return
       if (shared?.maps) maps = mergePlayerTokenCombatFields(maps, shared.maps)
     }
-    const payload: SharedMapsState = { maps, selectedId: state.selectedId, updatedAt: Date.now() }
+    const updatedAt = Math.max(Date.now(), lastSharedMapsUpdatedAt + 1, lastLocalMapsWriteAt + 1)
+    const payload: SharedMapsState = { maps, selectedId: state.selectedId, updatedAt }
+    if (seq !== mapSaveSeq) return
+    lastLocalMapsWriteAt = updatedAt
     lastSharedMapsUpdatedAt = payload.updatedAt ?? Date.now()
     lastSharedMapsSnapshot = JSON.stringify(payload)
     await saveSharedResource('maps', payload)

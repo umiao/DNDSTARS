@@ -83,8 +83,10 @@ export async function saveSharedResource<T>(name: string, data: T): Promise<void
       name !== 'characters' &&
       name !== 'maps' &&
       name !== 'dodge' &&
+      name !== 'gale-combo' &&
       name !== 'stable-mind' &&
       name !== 'player-action' &&
+      name !== 'player-action-requests' &&
       name !== 'dice' &&
       name !== 'dice-events' &&
       name !== 'combat-log'

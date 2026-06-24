@@ -180,6 +180,10 @@ function applyStillWatersHealingOnBreathShift(before: Character, after: Characte
 }
 
 export function mergePlayerWritableCharacter(local: Character, shared: Character): Character {
+  const localTraits = local.traits ?? []
+  const sharedTraits = shared.traits ?? []
+  const localSkills = local.combatSkills ?? []
+  const sharedSkills = shared.combatSkills ?? []
   return {
     ...local,
     currentHp: shared.currentHp,
@@ -188,6 +192,30 @@ export function mergePlayerWritableCharacter(local: Character, shared: Character
     conditions: shared.conditions,
     actionPoints: shared.actionPoints,
     currentAP: shared.currentAP,
+    qi: shared.qi,
+    combatBuffs: shared.combatBuffs ? { ...shared.combatBuffs } : undefined,
+    traits: localTraits.map((trait) => {
+      const sharedTrait =
+        sharedTraits.find((item) => item.id === trait.id) ??
+        (trait.featureKey ? sharedTraits.find((item) => item.featureKey === trait.featureKey) : undefined)
+      if (!sharedTrait) return trait
+      return {
+        ...trait,
+        uses: sharedTrait.uses,
+        maxUses: sharedTrait.maxUses,
+      }
+    }),
+    combatSkills: localSkills.map((skill) => {
+      const sharedSkill =
+        sharedSkills.find((item) => item.id === skill.id) ??
+        (skill.skillTreeId ? sharedSkills.find((item) => item.skillTreeId === skill.skillTreeId) : undefined)
+      if (!sharedSkill) return skill
+      return {
+        ...skill,
+        remaining: sharedSkill.remaining,
+        usedThisTurn: sharedSkill.usedThisTurn,
+      }
+    }),
   }
 }
 
@@ -1183,7 +1211,6 @@ export const useCharacterStore = create<CharacterState>()(
                 ...tickOutOfBreathOnEndTurn({ ...c, combatBuffs: checkedBuffs }),
                 calmSpiritStacks: calmStacks && calmStacks > 0 ? calmStacks : undefined,
                 stillWaterTempHpTurns: nextStillWaterTempTurns > 0 ? nextStillWaterTempTurns : undefined,
-                galeComboReady: undefined,
               },
               combatSkills: c.combatSkills.map((s) => ({
                 ...s,

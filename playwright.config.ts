@@ -4,7 +4,8 @@ import path from 'node:path'
 
 const dmUrl = 'http://127.0.0.1:6173'
 const playerUrl = 'http://127.0.0.1:6174'
-const sharedApiBases = `${dmUrl}/api,${playerUrl}/api`
+const player2Url = 'http://127.0.0.1:6175'
+const sharedApiBases = `${dmUrl}/api,${playerUrl}/api,${player2Url}/api`
 const sharedRoot = path.join(os.tmpdir(), 'stars-app-e2e-shared')
 
 export default defineConfig({
@@ -38,6 +39,18 @@ export default defineConfig({
       env: {
         STARS_SHARED_ROOT: sharedRoot,
         VITE_APP_MODE: 'player',
+        VITE_SHARED_API_BASES: sharedApiBases,
+      },
+    },
+    {
+      command: 'node scripts/vite-server.mjs --host 127.0.0.1 --port 6175 --strictPort',
+      url: player2Url,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      env: {
+        STARS_SHARED_ROOT: sharedRoot,
+        VITE_APP_MODE: 'player',
+        VITE_PLAYER_SLOT: 'player2',
         VITE_SHARED_API_BASES: sharedApiBases,
       },
     },

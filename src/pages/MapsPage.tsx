@@ -72,6 +72,10 @@ import {
   isBasicShot,
   findClassTrait,
 } from '../lib/classFeatures'
+import {
+  piercingInsightExtraD4,
+  piercingInsightHpThresholdPercent,
+} from '../lib/traitRegistry'
 import { isCalmMindActive, isOutOfBreath, triggerOutOfBreath } from '../lib/calmMind'
 import {
   agileLeapMoveFeet,
@@ -92,6 +96,8 @@ import {
 } from '../lib/archerCombat'
 
 const PLAYER_ACTION_DEDUPE_WINDOW_MS = 8000
+const PLAYER_ACTION_QUEUE_LIMIT = 80
+type GaleComboDecision = 'accepted' | 'declined' | 'timeout'
 import {
   applyAttackDefenseDamageModifier,
   characterToCombatInput,
@@ -189,6 +195,8 @@ import type {
   SharedStableMindState,
   SharedGaleComboState,
   SharedPlayerActionState,
+  SharedPlayerActionRequestQueueState,
+  SharedPlayerActionProcessedState,
   SharedPlayerActionAckState,
   SharedDiceState,
   SharedDiceEventsState,
@@ -491,13 +499,14 @@ export default function MapsPage() {
   const pendingSharedGaleComboRef = useRef<{
     id: string
     casterCharId: string
-    resolve: (useGaleCombo: boolean) => void
+    resolve: (decision: GaleComboDecision) => void
   } | null>(null)
   const suppressedDodgePromptIdsRef = useRef(new Set<string>())
   const suppressedStableMindPromptIdsRef = useRef(new Set<string>())
   const suppressedGaleComboPromptIdsRef = useRef(new Set<string>())
   const playerActionSeqRef = useRef(0)
   const seenPlayerActionIdsRef = useRef(new Set<string>())
+  const processedPlayerActionIdsRef = useRef(new Set<string>())
   const recentPlayerActionKeysRef = useRef(new Map<string, number>())
   const seenPlayerActionAckIdsRef = useRef(new Set<string>())
   const seenSharedDiceIdsRef = useRef(new Set<string>())
@@ -601,6 +610,44 @@ export default function MapsPage() {
       combatBuffs: { ...latest.combatBuffs, galeComboReady: undefined },
     })
     pushCombatLog(`${latest.name} 消耗疾风连击：${actionLabel} 不消耗 AP。`, 'turn')
+    return true
+  }
+
+  const galeComboUnavailableReason = (caster: Character) => {
+    const trait = findClassTrait(caster, 'galeCombo')
+    if (!trait) return '未学习疾风连击'
+    if (trait.uses <= 0) return '疾风连击次数不足'
+    if (caster.combatBuffs?.galeComboReady) return '疾风连击已就绪'
+    return ''
+  }
+
+  const offerGaleComboAfterDamageApplied = async (
+    casterId: string,
+    fallbackCaster: Character,
+    triggerLabel = '对目标造成击飞，且目标豁免失败',
+  ) => {
+    const latestCaster = useCharacterStore.getState().characters.find((c) => c.id === casterId) ?? fallbackCaster
+    if (!canOfferGaleCombo(latestCaster)) {
+      const reason = galeComboUnavailableReason(latestCaster)
+      pushCombatLog(`${latestCaster.name} 满足疾风连击触发条件，但不能发动${reason ? `：${reason}` : ''}。`, 'system')
+      return false
+    }
+    pushCombatLog(`${latestCaster.name} 触发疾风连击：当前结算完成，等待确认。`, 'turn')
+    const decision = await requestSharedGaleComboChoice(latestCaster, triggerLabel)
+    if (decision !== 'accepted') {
+      pushCombatLog(
+        decision === 'timeout'
+          ? `${latestCaster.name} 疾风连击确认超时，未发动。`
+          : `${latestCaster.name} 暂不发动疾风连击。`,
+        decision === 'timeout' ? 'system' : 'turn',
+      )
+      return false
+    }
+    const refreshedCaster = useCharacterStore.getState().characters.find((c) => c.id === casterId) ?? latestCaster
+    updateChar(casterId, {
+      combatBuffs: { ...refreshedCaster.combatBuffs, galeComboReady: true },
+    })
+    pushCombatLog(`${refreshedCaster.name} 发动疾风连击：下一次技能或基础射击不消耗 AP。`, 'turn')
     return true
   }
 
@@ -752,6 +799,7 @@ export default function MapsPage() {
       setPendingPlayerActionLocked(null)
       seenPlayerActionAckIdsRef.current.clear()
       seenPlayerActionIdsRef.current.clear()
+      processedPlayerActionIdsRef.current.clear()
       playerActionResultBaselinesRef.current = {}
       clearPlayerCombatUI()
     }
@@ -1260,7 +1308,7 @@ export default function MapsPage() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [activeMap?.id, isDM, characters, playerChar?.id, visibleChars])
+  }, [activeMap?.id, assignedCharacterId, isDM, characters, playerChar?.id, visibleChars])
 
   useEffect(() => {
     if (!activeMap) return
@@ -1338,7 +1386,7 @@ export default function MapsPage() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [activeMap?.id, isDM, characters, playerChar?.id, visibleChars])
+  }, [activeMap?.id, assignedCharacterId, isDM, characters, playerChar?.id, visibleChars])
 
   useEffect(() => {
     if (!activeMap) return
@@ -1362,7 +1410,7 @@ export default function MapsPage() {
             useGaleCombo: false,
             updatedAt: Date.now(),
           })
-          pending.resolve(false)
+          pending.resolve('timeout')
           return
         }
         if (state.status === 'answered') {
@@ -1372,7 +1420,7 @@ export default function MapsPage() {
             status: 'done',
             updatedAt: Date.now(),
           })
-          pending.resolve(!!state.useGaleCombo)
+          pending.resolve(state.useGaleCombo ? 'accepted' : 'declined')
         }
         return
       }
@@ -1390,11 +1438,23 @@ export default function MapsPage() {
         return
       }
       const casterChar = characters.find((c) => c.id === state.casterCharId)
+      const linkedPlayerCharIds = new Set(
+        (activeMap.tokens ?? [])
+          .filter((token) => token.type === 'player' && !!token.characterId)
+          .map((token) => token.characterId!),
+      )
+      const visibleLinkedPlayerCharIds = [...linkedPlayerCharIds].filter((id) =>
+        characters.some((character) => character.id === id && character.visibleToPlayers !== false),
+      )
       const canAnswer =
         !!casterChar &&
         casterChar.currentHp > 0 &&
         (casterChar.id === playerChar?.id ||
+          casterChar.id === assignedCharacterId ||
           visibleChars.some((c) => c.id === casterChar.id) ||
+          (!assignedCharacterId &&
+            visibleLinkedPlayerCharIds.length === 1 &&
+            visibleLinkedPlayerCharIds[0] === casterChar.id) ||
           !casterChar.dmNotes)
       if (canAnswer) {
         setSharedGaleComboPrompt({
@@ -1411,7 +1471,7 @@ export default function MapsPage() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [activeMap?.id, isDM, characters, playerChar?.id, visibleChars])
+  }, [activeMap?.id, assignedCharacterId, isDM, characters, playerChar?.id, visibleChars])
 
   const canControlPlayerTurn =
     combatActive &&
@@ -1918,19 +1978,16 @@ export default function MapsPage() {
     caster: Character,
     casterId: string,
     save: KnockbackSaveResult,
-  ) => {
-    if (!activeMap || save.success) return
-    updateToken(activeMap.id, tokenId, { knockbackTurns: KNOCKBACK_DEFAULT_TURNS })
-    const latestCaster = useCharacterStore.getState().characters.find((c) => c.id === casterId) ?? caster
-    if (canOfferGaleCombo(latestCaster)) {
-      const accepted = await requestSharedGaleComboChoice(latestCaster, '对目标造成击飞，且目标豁免失败')
-      if (accepted) {
-        const refreshedCaster = useCharacterStore.getState().characters.find((c) => c.id === casterId) ?? latestCaster
-        updateChar(casterId, {
-          combatBuffs: { ...refreshedCaster.combatBuffs, galeComboReady: true },
-        })
-        pushCombatLog(`${refreshedCaster.name} 发动疾风连击：下一次技能或基础射击不消耗 AP。`, 'turn')
-      }
+    options?: { tokenPatch?: Partial<Token> },
+  ): Promise<boolean> => {
+    if (!activeMap || save.success) return false
+    if (options?.tokenPatch) {
+      options.tokenPatch.knockbackTurns = Math.max(
+        options.tokenPatch.knockbackTurns ?? 0,
+        KNOCKBACK_DEFAULT_TURNS,
+      )
+    } else {
+      updateToken(activeMap.id, tokenId, { knockbackTurns: KNOCKBACK_DEFAULT_TURNS })
     }
     if (targetCharId) {
       const ch = useCharacterStore.getState().characters.find((c) => c.id === targetCharId)
@@ -1938,6 +1995,9 @@ export default function MapsPage() {
         updateChar(targetCharId, { conditions: [...ch.conditions, KNOCKBACK_STATUS_LABEL] })
       }
     }
+    void casterId
+    void caster
+    return true
   }
 
   const resolveAnimatedKnockbackSave = async (
@@ -1997,7 +2057,7 @@ export default function MapsPage() {
       const save = await resolveAnimatedKnockbackSave(caster, token, targetChar, '击飞敏捷豁免', {
         disadvantage: pending.skill.knockbackSaveDisadvantage,
       })
-      await applyKnockbackFromSave(pending.tokenId, pending.targetCharId, caster, pending.casterId, save)
+      const galeComboTriggered = await applyKnockbackFromSave(pending.tokenId, pending.targetCharId, caster, pending.casterId, save)
       const saveLabel = formatKnockbackSaveLabel(save)
 
       if (index + 1 < queue.length) {
@@ -2019,6 +2079,9 @@ export default function MapsPage() {
           kind: 'save',
         },
       })
+      if (galeComboTriggered) {
+        void offerGaleComboAfterDamageApplied(pending.casterId, caster)
+      }
     })()
   }
 
@@ -2581,6 +2644,7 @@ export default function MapsPage() {
     damageAfterDefense?: number
     attackDefenseDiff?: number | null
     attackDefenseModifier?: number
+    galeComboPending?: boolean
   }
 
   const resolveAttack = async (
@@ -2954,20 +3018,21 @@ export default function MapsPage() {
     if (hit && caster) {
       const pi = findClassTrait(caster, 'piercingInsight')
       if (pi) {
+        const hpThresholdPercent = piercingInsightHpThresholdPercent(pi.level)
+        const hpThresholdRatio = hpThresholdPercent / 100
         let lowHp = false
         if (targetChar) {
-          lowHp = targetChar.currentHp / targetChar.maxHp < 0.1
+          lowHp = targetChar.maxHp > 0 && targetChar.currentHp / targetChar.maxHp < hpThresholdRatio
         } else if (token.maxHp != null) {
           const cur = token.hp ?? token.maxHp
-          lowHp = cur / token.maxHp < 0.1
+          lowHp = token.maxHp > 0 && cur / token.maxHp < hpThresholdRatio
         }
         if (lowHp) {
-          const extra = Array.from({ length: pi.level }, () => 1 + Math.floor(Math.random() * 4)).reduce(
-            (a, b) => a + b,
-            0,
-          )
-          values.push(extra)
-          total += extra
+          const diceCount = piercingInsightExtraD4(pi.level)
+          const extraValues = await rollDiceBoxValues(diceCount, 4, `${skill.name} 看破额外伤害`, token.label)
+          values.push(...extraValues)
+          total += extraValues.reduce((sum, value) => sum + value, 0)
+          featureExtraLabelParts.push(`看破+${diceCount}d4（生命值<${hpThresholdPercent}%）`)
         }
       }
     }
@@ -3018,6 +3083,7 @@ export default function MapsPage() {
     let attackDefenseDiff: number | null = null
     let attackDefenseModifier = 0
     let appliedDamageAmount = 0
+    let pendingGaleComboAfterDamage = false
     let pendingDexSave:
       | { mode: 'half' | 'none' | 'fail-half'; success: boolean }
       | null = null
@@ -3035,7 +3101,9 @@ export default function MapsPage() {
           skill.skillTreeId === 'whirlwindKick' &&
           skillGrantsKnockbackOnHit(caster, skill)
         ) {
-          await applyKnockbackFromSave(token.id, token.characterId, caster, casterId, save)
+          pendingGaleComboAfterDamage =
+            (await applyKnockbackFromSave(token.id, token.characterId, caster, casterId, save, { tokenPatch })) ||
+            pendingGaleComboAfterDamage
         }
       }
       if (caster && casterToken && skill.skillTreeId === 'clusterShot') {
@@ -3533,6 +3601,9 @@ export default function MapsPage() {
         scheduleKnockbackRolls([knockbackPending])
       }
     }
+    if (!opts?.silent && pendingGaleComboAfterDamage && caster) {
+      await offerGaleComboAfterDamageApplied(casterId, caster)
+    }
     await runCombatResolutionStage(resolutionSession, 'actionResolved')
     if (!opts?.skipCleanup) {
       setTargeting(null)
@@ -3550,6 +3621,7 @@ export default function MapsPage() {
       damageAfterDefense,
       attackDefenseDiff,
       attackDefenseModifier,
+      galeComboPending: pendingGaleComboAfterDamage,
     }
   }
 
@@ -3578,6 +3650,7 @@ export default function MapsPage() {
 
     const results: AttackResolveResult[] = []
     const knockbackQueue: KnockbackPending[] = []
+    let galeComboAfterDamage = false
     let selfCooldownReduction = 0
     for (const [index, target] of targets.entries()) {
       const start = index * perArrowDiceCount
@@ -3601,6 +3674,7 @@ export default function MapsPage() {
         results.push(result)
         selfCooldownReduction = Math.max(selfCooldownReduction, result.selfCooldownReduction ?? 0)
         if (result.knockbackPending) knockbackQueue.push(result.knockbackPending)
+        galeComboAfterDamage = galeComboAfterDamage || !!result.galeComboPending
       }
     }
 
@@ -3644,6 +3718,9 @@ export default function MapsPage() {
     setRoll(rollForDisplay)
     publishSharedDiceRoll(rollForDisplay)
     pushCombatLog(`${caster.name} 使用 ${skill.name}：${summary}，合计 ${totalDamage} 点。`, totalDamage > 0 ? 'damage' : 'attack')
+    if (galeComboAfterDamage) {
+      await offerGaleComboAfterDamageApplied(caster.id, caster)
+    }
     return results
   }
 
@@ -3727,6 +3804,7 @@ export default function MapsPage() {
 
     const hitLines: string[] = []
     const knockbackQueue: KnockbackPending[] = []
+    let galeComboAfterDamage = false
     let combinedValues: number[] = []
     let combinedTotal = 0
     let anyHit = false
@@ -3817,6 +3895,7 @@ export default function MapsPage() {
           `${token.label} ${result.total}${effectLabels.length > 0 ? `（${effectLabels.join(' · ')}）` : ''}`,
         )
         if (result.knockbackPending) knockbackQueue.push(result.knockbackPending)
+        galeComboAfterDamage = galeComboAfterDamage || !!result.galeComboPending
       }
     }
     combinedValues = anyHit ? sharedValues : []
@@ -3873,6 +3952,9 @@ export default function MapsPage() {
       scheduleKnockbackRolls(knockbackQueue)
     }
     await runCombatResolutionStage(aoeResolutionSession, 'afterDamageApplied')
+    if (galeComboAfterDamage) {
+      await offerGaleComboAfterDamageApplied(casterId, caster)
+    }
     await runCombatResolutionStage(aoeResolutionSession, 'actionResolved')
     resolvingAoeRef.current = false
   }
@@ -4834,6 +4916,7 @@ export default function MapsPage() {
     seenSharedDiceIdsRef.current.clear()
     seenRollRequestIdsRef.current.clear()
     seenPlayerActionIdsRef.current.clear()
+    processedPlayerActionIdsRef.current.clear()
     seenPlayerActionAckIdsRef.current.clear()
     suppressedGaleComboPromptIdsRef.current.clear()
     pendingSharedDodgeRef.current = null
@@ -4899,6 +4982,18 @@ export default function MapsPage() {
         round: 1,
         initiativeIndex: 0,
         seq: 0,
+        updatedAt,
+      }),
+      saveSharedResource<SharedPlayerActionRequestQueueState>('player-action-requests', {
+        mapId,
+        combatId: queueCombatId,
+        requests: [],
+        updatedAt,
+      }),
+      saveSharedResource<SharedPlayerActionProcessedState>('player-action-processed', {
+        mapId,
+        combatId: queueCombatId,
+        actionIds: [],
         updatedAt,
       }),
       saveSharedResource<SharedPlayerActionAckState>('player-action-ack', {
@@ -5090,7 +5185,7 @@ export default function MapsPage() {
   const requestSharedGaleComboChoice = (
     caster: Character,
     triggerLabel: string,
-  ): Promise<boolean> => {
+  ): Promise<GaleComboDecision> => {
     if (!activeMap || !isDM) {
       return showCombatDialog({
         title: '疾风连击',
@@ -5100,7 +5195,7 @@ export default function MapsPage() {
         confirmText: '发动',
         cancelText: '暂不发动',
         tone: 'violet',
-      })
+      }).then((accepted) => (accepted ? 'accepted' : 'declined'))
     }
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     const expiresAt = Date.now() + 15000
@@ -6230,11 +6325,20 @@ export default function MapsPage() {
   }
 
   const completePlayerActionRequest = (action: SharedPlayerActionState) => {
-    void saveSharedResource<SharedPlayerActionState>('player-action', {
-      ...action,
-      status: 'done',
-      updatedAt: Date.now(),
-    })
+    // Requests are append-only from the player side. DM completion is represented
+    // by player-action-ack so we never overwrite a newer player request snapshot.
+    processedPlayerActionIdsRef.current.add(action.id)
+    void (async () => {
+      const current = await loadSharedResource<SharedPlayerActionProcessedState>('player-action-processed')
+      const currentIds = current?.combatId === action.combatId ? (current?.actionIds ?? []) : []
+      const ids = [...new Set([...currentIds, action.id])].slice(-PLAYER_ACTION_QUEUE_LIMIT * 3)
+      await saveSharedResource<SharedPlayerActionProcessedState>('player-action-processed', {
+        mapId: action.mapId,
+        combatId: action.combatId,
+        actionIds: ids,
+        updatedAt: Date.now(),
+      })
+    })()
   }
 
   const getPlayerActionExecutionKey = (action: SharedPlayerActionState) => {
@@ -6269,6 +6373,7 @@ export default function MapsPage() {
       completePlayerActionRequest(action)
       return
     }
+    if (processedPlayerActionIdsRef.current.has(action.id)) return
     if (seenPlayerActionIdsRef.current.has(action.id)) return
     seenPlayerActionIdsRef.current.add(action.id)
 
@@ -6605,6 +6710,32 @@ export default function MapsPage() {
     return isTokenAlive(currentInitiativeToken, useCharacterStore.getState().characters)
   }
 
+  const appendPlayerActionRequest = async (action: SharedPlayerActionState) => {
+    const current = await loadSharedResource<SharedPlayerActionRequestQueueState>('player-action-requests')
+    const liveRequests = (current?.requests ?? []).filter((request) => {
+      if (!request || request.id === action.id || request.status !== 'pending') return false
+      if (request.mapId !== action.mapId) return false
+      if (action.combatId && request.combatId && request.combatId !== action.combatId) return false
+      return true
+    })
+    const requests = [...liveRequests, action].slice(-PLAYER_ACTION_QUEUE_LIMIT)
+    await saveSharedResource<SharedPlayerActionRequestQueueState>('player-action-requests', {
+      mapId: action.mapId,
+      combatId: action.combatId,
+      requests,
+      updatedAt: Date.now(),
+    })
+  }
+
+  const submitPlayerActionRequest = (action: SharedPlayerActionState, label: string) => {
+    setPendingPlayerActionLocked({ id: action.id, label })
+    void (async () => {
+      await appendPlayerActionRequest(action)
+      await publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
+    })()
+    return true
+  }
+
   const sendPlayerEndTurnRequest = () => {
     if (!canSendPlayerCombatAction() || !activeMap || !turnCharacter || !currentInitiativeToken) return false
     const seq = playerActionSeqRef.current + 1
@@ -6623,10 +6754,7 @@ export default function MapsPage() {
       seq,
       updatedAt: Date.now(),
     }
-    setPendingPlayerActionLocked({ id: action.id, label: `${turnCharacter.name} 结束回合` })
-    void saveSharedResource<SharedPlayerActionState>('player-action', action)
-    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
-    return true
+    return submitPlayerActionRequest(action, `${turnCharacter.name} 结束回合`)
   }
 
   const sendPlayerActivateFeatureRequest = (
@@ -6654,10 +6782,7 @@ export default function MapsPage() {
       updatedAt: Date.now(),
     }
     const featureName = findClassTrait(turnCharacter, featureKey)?.name ?? featureKey
-    setPendingPlayerActionLocked({ id: action.id, label: `${turnCharacter.name} 激活${featureName}` })
-    void saveSharedResource<SharedPlayerActionState>('player-action', action)
-    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
-    return true
+    return submitPlayerActionRequest(action, `${turnCharacter.name} 激活${featureName}`)
   }
 
   const sendPlayerAttackTokenRequest = (targetToken: Token, skill: CombatSkill, targetTokenIds?: string[]) => {
@@ -6682,10 +6807,7 @@ export default function MapsPage() {
       seq,
       updatedAt: Date.now(),
     }
-    setPendingPlayerActionLocked({ id: action.id, label: `${turnCharacter.name} 使用 ${skill.name}` })
-    void saveSharedResource<SharedPlayerActionState>('player-action', action)
-    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
-    return true
+    return submitPlayerActionRequest(action, `${turnCharacter.name} 使用 ${skill.name}`)
   }
 
   const sendPlayerAoeAttackRequest = (targetCell: GridCell) => {
@@ -6709,10 +6831,7 @@ export default function MapsPage() {
       seq,
       updatedAt: Date.now(),
     }
-    setPendingPlayerActionLocked({ id: action.id, label: `${turnCharacter.name} 使用 ${targeting.skill.name}` })
-    void saveSharedResource<SharedPlayerActionState>('player-action', action)
-    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
-    return true
+    return submitPlayerActionRequest(action, `${turnCharacter.name} 使用 ${targeting.skill.name}`)
   }
 
   const sendPlayerMoveRequest = (targetPosition: { x: number; y: number }, movedFeet: number) => {
@@ -6735,10 +6854,7 @@ export default function MapsPage() {
       seq,
       updatedAt: Date.now(),
     }
-    setPendingPlayerActionLocked({ id: action.id, label: `${turnCharacter.name} 移动 ${movedFeet} 尺` })
-    void saveSharedResource<SharedPlayerActionState>('player-action', action)
-    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
-    return true
+    return submitPlayerActionRequest(action, `${turnCharacter.name} 移动 ${movedFeet} 尺`)
   }
 
   const sendPlayerQiReduceCooldownRequest = (skill: CombatSkill) => {
@@ -6761,10 +6877,7 @@ export default function MapsPage() {
       seq,
       updatedAt: Date.now(),
     }
-    setPendingPlayerActionLocked({ id: action.id, label: `${turnCharacter.name} 消耗气降低冷却` })
-    void saveSharedResource<SharedPlayerActionState>('player-action', action)
-    void publishSharedEvent<SharedPlayerActionState>('player-action-player-to-dm', action)
-    return true
+    return submitPlayerActionRequest(action, `${turnCharacter.name} 消耗气降低冷却`)
   }
 
   const waitForAuthoritativePlayerActionSync = async (appliedAt?: number) => {
@@ -6792,9 +6905,35 @@ export default function MapsPage() {
       handlePlayerActionRequest,
     )
     let cancelled = false
+    const hydrateProcessedActions = async () => {
+      const processed = await loadSharedResource<SharedPlayerActionProcessedState>('player-action-processed')
+      if (cancelled || !processed?.actionIds?.length) return
+      if (processed.mapId && processed.mapId !== activeMap.id) return
+      if (combatIdRef.current && processed.combatId && processed.combatId !== combatIdRef.current) return
+      processedPlayerActionIdsRef.current = new Set(processed.actionIds)
+    }
+    const loadQueuedActions = async () => {
+      await hydrateProcessedActions()
+      const queue = await loadSharedResource<SharedPlayerActionRequestQueueState>('player-action-requests')
+      if (cancelled || !queue?.requests?.length) return
+      const actions = queue.requests
+        .filter((action) => {
+          if (!action || action.status !== 'pending') return false
+          if (action.mapId !== activeMap.id) return false
+          if (combatIdRef.current && action.combatId && action.combatId !== combatIdRef.current) return false
+          if (processedPlayerActionIdsRef.current.has(action.id)) return false
+          return true
+        })
+        .sort((a, b) => (a.updatedAt - b.updatedAt) || (a.seq - b.seq))
+      for (const action of actions) {
+        if (cancelled) return
+        await handlePlayerActionRequest(action)
+      }
+    }
     const load = async () => {
+      await loadQueuedActions()
       const action = await loadSharedResource<SharedPlayerActionState>('player-action')
-      if (!cancelled && action) handlePlayerActionRequest(action)
+      if (!cancelled && action) await handlePlayerActionRequest(action)
     }
     void load()
     const timer = window.setInterval(load, 500)

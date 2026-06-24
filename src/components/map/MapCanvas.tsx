@@ -7,6 +7,7 @@ import {
   loadCalmMindIcon,
   loadDoubleArrowIcon,
   loadEagleEyeIcon,
+  loadGaleComboIcon,
   loadHuntingMarkIcon,
   loadIgniteIcon,
   loadIllusionDanceIcon,
@@ -331,33 +332,45 @@ function DoubleArrowBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex
 }
 
 function GaleComboBadge({ radius, gridIndex = 0 }: { radius: number; gridIndex?: number }) {
+  const [iconCanvas, setIconCanvas] = useState<HTMLCanvasElement | null>(null)
   const size = rightBadgeSize(radius)
   const r = size / 2
   const { x, y } = rightBadgeGridPos(radius, size, gridIndex)
+
+  useEffect(() => {
+    let cancelled = false
+    loadGaleComboIcon().then((c) => {
+      if (!cancelled) setIconCanvas(c)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   return (
     <Group x={x} y={y} listening={false}>
-      <Circle
-        radius={r}
-        fill="rgba(49,46,129,0.68)"
-        stroke="#67e8f9"
-        strokeWidth={tokenLineWidth(radius, 1.5)}
-        shadowBlur={5 * tokenScale(radius)}
-        shadowColor="rgba(103,232,249,0.6)"
-      />
-      <Text
-        text="0"
-        width={size}
-        height={size}
-        offsetX={r}
-        offsetY={r}
-        fontSize={Math.max(10, r * 1.35)}
-        fontStyle="bold"
-        fill="#e0f2fe"
-        stroke="#312e81"
-        strokeWidth={tokenLineWidth(radius, 0.25)}
-        align="center"
-        verticalAlign="middle"
-      />
+      {iconCanvas ? (
+        <KonvaImage
+          image={iconCanvas}
+          width={size}
+          height={size}
+          offsetX={r}
+          offsetY={r}
+          x={0}
+          y={0}
+          shadowBlur={5 * tokenScale(radius)}
+          shadowColor="rgba(103,232,249,0.72)"
+        />
+      ) : (
+        <Circle
+          radius={r}
+          fill="rgba(8,47,73,0.7)"
+          stroke="#67e8f9"
+          strokeWidth={tokenLineWidth(radius, 1.45)}
+          shadowBlur={5 * tokenScale(radius)}
+          shadowColor="rgba(103,232,249,0.72)"
+        />
+      )}
     </Group>
   )
 }
@@ -1411,7 +1424,11 @@ export default function MapCanvas({
                 setHoveredTokenId((id) => (hovered ? t.id : id === t.id ? null : id))
               }
               onSelect={() => {
-                if (deleteSelectMode || aoeSelectMode) return
+                if (deleteSelectMode) return
+                if (aoeSelectMode) {
+                  onSelectToken(t.id)
+                  return
+                }
                 onSelectToken(t.id)
               }}
               instantPosition={!!dragPreviewPositions[t.id]}

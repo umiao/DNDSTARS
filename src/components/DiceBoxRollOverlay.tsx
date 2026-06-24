@@ -48,6 +48,7 @@ export default function DiceBoxRollOverlay({
   const sentRequestRef = useRef<string | null>(null)
   const onCompleteRef = useRef(onComplete)
   const [flyX, flyY] = useMemo(() => resolveFlyOffset(requestId, flyIndex), [flyIndex, requestId])
+  const safeCountForFrame = Math.max(1, Math.min(12, Math.round(count)))
 
   useEffect(() => {
     onCompleteRef.current = onComplete
@@ -135,7 +136,7 @@ export default function DiceBoxRollOverlay({
       <iframe
         ref={iframeRef}
         title={`${sides}-sided dice roller`}
-        src={`/dice-box-frame.html?badge=0&sides=${iframeSides}`}
+        src={`/dice-box-frame.html?badge=0&sides=${iframeSides}&qty=${safeCountForFrame}`}
         className="dice-box-damage-frame dice-box-roll-flight"
         style={{ '--dice-fly-x': flyX, '--dice-fly-y': flyY } as CSSProperties}
         sandbox="allow-scripts allow-same-origin"

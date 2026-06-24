@@ -7,6 +7,8 @@ import {
   getClassFeatureDef,
   isArcherLineFeatureKey,
   maxQiForLevel,
+  piercingInsightExtraD4,
+  piercingInsightHpThresholdPercent,
   syncQiForCharacter,
   TRAIT_CHOICE_GROUPS,
   type ClassFeatureKey,
@@ -115,6 +117,18 @@ describe('archer document feature config', () => {
     expect(getClassFeatureDef('swiftShot')?.name).toBe('波澜不惊')
     expect(getClassFeatureDef('swiftShot')?.description).toContain('切换静心/气喘状态')
     expect(getClassFeatureDef('finale')?.description).toContain('消耗 2 AP')
+  })
+
+  it('documents piercing insight hp thresholds and extra damage by rank', () => {
+    expect([1, 2, 3, 4].map(piercingInsightHpThresholdPercent)).toEqual([20, 25, 40, 50])
+    expect([1, 2, 3, 4].map(piercingInsightExtraD4)).toEqual([1, 2, 2, 3])
+    const def = getClassFeatureDef('piercingInsight')!
+    expect([1, 2, 3, 4].map((rank) => formatFeatureDescription(def, rank))).toEqual([
+      '当你攻击一名生命值少于 20% 的敌人时，额外造成 1D4 点穿刺伤害。',
+      '当你攻击一名生命值少于 25% 的敌人时，额外造成 2D4 点穿刺伤害。',
+      '当你攻击一名生命值少于 40% 的敌人时，额外造成 2D4 点穿刺伤害。',
+      '当你攻击一名生命值少于 50% 的敌人时，额外造成 3D4 点穿刺伤害。',
+    ])
   })
 
   it('preserves current shadow dancer qi while syncing derived character data', () => {

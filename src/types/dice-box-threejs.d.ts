@@ -27,6 +27,7 @@ declare module '@3d-dice/dice-box-threejs' {
     light_intensity?: number
     baseScale?: number
     strength?: number
+    dimensions?: { x: number; y: number }
     assetPath?: string
     onRollComplete?: (results: DiceRollResults) => void
   }

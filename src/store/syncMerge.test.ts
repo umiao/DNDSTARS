@@ -68,6 +68,81 @@ describe('T13/AC6 鈥?mergePlayerWritableCharacter keeps DM-authoritative fields
     expect(merged.conditions).toBe(shared.conditions)
   })
 
+  it('keeps DM combat buffs, qi, cooldowns and feature uses from the shared snapshot', () => {
+    const local = char({
+      qi: 0,
+      combatBuffs: {},
+      traits: [
+        {
+          id: 'gale-local',
+          name: 'Gale Combo',
+          level: 1,
+          uses: 1,
+          maxUses: 1,
+          description: '',
+          featureKey: 'galeCombo',
+        },
+      ],
+      combatSkills: [
+        {
+          id: 'basic-shot',
+          name: 'Basic Shot',
+          emoji: 'bow',
+          description: '',
+          apCost: 1,
+          cooldown: 0,
+          cdReduction: 0,
+          remaining: 0,
+          usedThisTurn: false,
+          damageCount: 1,
+          damageSides: 8,
+          damageBonus: 0,
+          skillTreeId: 'basicShot',
+        },
+      ],
+    })
+    const shared = char({
+      qi: 7,
+      combatBuffs: { galeComboReady: true },
+      traits: [
+        {
+          id: 'gale-shared',
+          name: 'Gale Combo',
+          level: 1,
+          uses: 0,
+          maxUses: 1,
+          description: '',
+          featureKey: 'galeCombo',
+        },
+      ],
+      combatSkills: [
+        {
+          id: 'basic-shot',
+          name: 'Basic Shot',
+          emoji: 'bow',
+          description: '',
+          apCost: 1,
+          cooldown: 0,
+          cdReduction: 0,
+          remaining: 2,
+          usedThisTurn: true,
+          damageCount: 1,
+          damageSides: 8,
+          damageBonus: 0,
+          skillTreeId: 'basicShot',
+        },
+      ],
+    })
+
+    const merged = mergePlayerWritableCharacter(local, shared)
+
+    expect(merged.qi).toBe(7)
+    expect(merged.combatBuffs?.galeComboReady).toBe(true)
+    expect(merged.traits[0].uses).toBe(0)
+    expect(merged.traits[0].maxUses).toBe(1)
+    expect(merged.combatSkills[0]).toMatchObject({ remaining: 2, usedThisTurn: true })
+  })
+
   it('does NOT clobber non-whitelisted local fields (only the whitelist comes from shared)', () => {
     // name 涓嶅湪鐧藉悕鍗?鈬?淇濈暀鏈湴鍊硷紝涓嶈瀵圭瑕嗙洊銆?
     const local = char({ name: '鐜╁鏀圭殑鍚嶅瓧', currentHp: 40 })

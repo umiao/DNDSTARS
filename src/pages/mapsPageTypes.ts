@@ -85,6 +85,20 @@ export interface SharedPlayerActionState {
   updatedAt: number
 }
 
+export interface SharedPlayerActionRequestQueueState {
+  mapId?: string
+  combatId?: string
+  requests: SharedPlayerActionState[]
+  updatedAt: number
+}
+
+export interface SharedPlayerActionProcessedState {
+  mapId?: string
+  combatId?: string
+  actionIds: string[]
+  updatedAt: number
+}
+
 export interface SharedPlayerActionAckState {
   id: string
   mapId: string

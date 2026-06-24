@@ -72,7 +72,18 @@ describe('authorizeStateWrite — AC2 鉴权', () => {
 
   it('(d) flag 设 + 玩家写白名单资源（无 secret）⇒ 仍放行', () => {
     process.env.STARS_SHARED_SECRET = 's3cr3t'
-    for (const name of ['characters', 'maps', 'dodge', 'stable-mind', 'player-action', 'dice', 'dice-events', 'combat-log']) {
+    for (const name of [
+      'characters',
+      'maps',
+      'dodge',
+      'gale-combo',
+      'stable-mind',
+      'player-action',
+      'player-action-requests',
+      'dice',
+      'dice-events',
+      'combat-log',
+    ]) {
       expect(authorizeStateWrite(name, null).ok).toBe(true)
     }
   })

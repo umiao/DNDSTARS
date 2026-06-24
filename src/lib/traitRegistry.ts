@@ -134,6 +134,19 @@ const perCombatPlusOne = (rank: number) => rank
 const diceEqualsRank = (rank: number) => rank
 const diceCap3 = (rank: number) => Math.min(3, rank)
 
+export function piercingInsightHpThresholdPercent(rank: number): number {
+  if (rank >= 4) return 50
+  if (rank >= 3) return 40
+  if (rank >= 2) return 25
+  return 20
+}
+
+export function piercingInsightExtraD4(rank: number): number {
+  if (rank >= 4) return 3
+  if (rank >= 2) return 2
+  return 1
+}
+
 function metaOption(key: MetaChoiceKey): TraitChoiceOption {
   const m = META_LABELS[key]
   return { kind: 'meta', metaKey: key, label: m.label, description: m.description }
@@ -221,8 +234,9 @@ export const CLASS_FEATURE_DEFS: ClassFeatureDef[] = [
     name: '看破！',
     usage: 'passive',
     description:
-      '当你攻击一名生命值少于 10% 的敌人时，额外造成 {dice}D4 点伤害。每提升 1 级特性，伤害额外增加 1D4。',
-    diceAtRank: diceEqualsRank,
+      '当你攻击一名生命值少于 {value}% 的敌人时，额外造成 {dice}D4 点穿刺伤害。',
+    valueAtRank: piercingInsightHpThresholdPercent,
+    diceAtRank: piercingInsightExtraD4,
   },
   {
     key: 'silentDraw',

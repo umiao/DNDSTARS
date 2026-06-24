@@ -1,0 +1,350 @@
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+
+const DM = 'http://127.0.0.1:6173'
+const PLAYER2 = 'http://127.0.0.1:6175'
+
+function center(col: number, row: number, gridSize = 70) {
+  return {
+    x: (col + 0.5) * gridSize,
+    y: (row + 0.5) * gridSize,
+  }
+}
+
+function player2Character() {
+  return {
+    id: 'player2-red-dragon-hero',
+    name: 'E2E 玩家2弓手',
+    player: '玩家2',
+    avatar: '🧝',
+    accent: 'from-emerald-500 to-cyan-500',
+    race: 'Human',
+    charClass: '弓手',
+    level: 5,
+    background: '',
+    experience: 0,
+    reputation: 0,
+    abilities: { str: 10, dex: 30, con: 10, int: 10, wis: 10, cha: 10 },
+    savingThrows: [],
+    skills: [],
+    maxHp: 80,
+    currentHp: 80,
+    tempHp: 0,
+    hitDice: '1d8',
+    ac: 18,
+    speed: 30,
+    initiativeBonus: 0,
+    saveDC: 12,
+    actionPoints: 2,
+    currentAP: 2,
+    passivePerception: 10,
+    inspiration: 0,
+    mana: 0,
+    maxMana: 0,
+    traits: [],
+    combatSkills: [],
+    conditions: [],
+    notes: '',
+    dmNotes: '',
+    visibleToPlayers: true,
+    combatBuffs: {},
+  }
+}
+
+async function putState(request: APIRequestContext, name: string, payload: unknown) {
+  const res = await request.put(`${DM}/api/state/${name}`, { data: payload })
+  expect(res.ok()).toBeTruthy()
+}
+
+async function getState<T>(request: APIRequestContext, name: string): Promise<T> {
+  const res = await request.get(`${DM}/api/state/${name}`)
+  expect(res.ok()).toBeTruthy()
+  return (await res.json()) as T
+}
+
+async function clearEvents(request: APIRequestContext) {
+  const res = await request.delete(`${DM}/api/events/_all`)
+  expect(res.ok()).toBeTruthy()
+}
+
+async function seedPlayer2VsRedDragon(request: APIRequestContext, mapId: string) {
+  const now = Date.now()
+  const combatId = `${mapId}:combat`
+  await clearEvents(request)
+  await putState(request, 'characters', {
+    characters: [player2Character()],
+    selectedId: 'player2-red-dragon-hero',
+    updatedAt: now,
+  })
+  await putState(request, 'maps', {
+    selectedId: mapId,
+    updatedAt: now,
+    maps: [
+      {
+        id: mapId,
+        name: `E2E 玩家2 vs 红龙雏龙 ${mapId}`,
+        width: 980,
+        height: 700,
+        gridSize: 70,
+        gridOffsetX: 0,
+        gridOffsetY: 0,
+        showGrid: true,
+        builtinGridDetected: false,
+        feetPerCell: 5,
+        gridColor: '#c4b5fd',
+        gridOpacity: 0.28,
+        showCoordinates: true,
+        snapMonstersToGrid: true,
+        tokens: [
+          {
+            id: 'player2-token',
+            label: 'E2E 玩家2弓手',
+            ...center(2, 2),
+            color: '#34d399',
+            emoji: '🧝',
+            size: 1,
+            type: 'player',
+            characterId: 'player2-red-dragon-hero',
+          },
+          {
+            id: 'red-dragon-token',
+            label: '红龙雏龙',
+            ...center(6, 2),
+            color: '#ef4444',
+            emoji: '🐉',
+            size: 2,
+            type: 'enemy',
+            hp: 52,
+            maxHp: 52,
+            poolId: 'wyrmling-red',
+            showHpOnToken: true,
+            showDetailOnToken: true,
+          },
+        ],
+      },
+    ],
+  })
+  await putState(request, 'combat-log', { mapId, entries: [], updatedAt: now })
+  await putState(request, 'dodge', { id: `${mapId}:none`, mapId, status: 'done', updatedAt: now })
+  await putState(request, 'stable-mind', { id: `${mapId}:none`, mapId, status: 'done', updatedAt: now })
+  await putState(request, 'player-action', { id: `${mapId}:none`, mapId, combatId, status: 'done', updatedAt: now })
+  await putState(request, 'player-action-requests', { mapId, combatId, requests: [], updatedAt: now })
+  await putState(request, 'player-action-processed', { mapId, combatId, actionIds: [], updatedAt: now })
+  await putState(request, 'player-action-ack', {
+    id: `${mapId}:none`,
+    mapId,
+    combatId,
+    actionId: 'none',
+    status: 'accepted',
+    round: 1,
+    initiativeIndex: 0,
+    updatedAt: now,
+  })
+  await putState(request, 'combat', {
+    mapId,
+    combatId,
+    active: true,
+    round: 1,
+    initiativeIndex: 0,
+    initiativeOrder: [
+      { tokenId: 'player2-token', label: 'E2E 玩家2弓手', emoji: '🧝', color: '#34d399', roll: 20 },
+      { tokenId: 'red-dragon-token', label: '红龙雏龙', emoji: '🐉', color: '#ef4444', roll: 10 },
+    ],
+    enemyApByToken: {
+      'red-dragon-token': { current: 0, max: 2 },
+    },
+    updatedAt: now,
+  })
+}
+
+async function sendPlayer2Action(page: Page, action: Record<string, unknown>) {
+  await page.evaluate(async (payload) => {
+    const headers = { 'Content-Type': 'application/json' }
+    const queueRes = await fetch('http://127.0.0.1:6173/api/state/player-action-requests')
+    const queue = queueRes.ok
+      ? ((await queueRes.json()) as { requests?: Record<string, unknown>[] })
+      : { requests: [] }
+    const put = await fetch('http://127.0.0.1:6173/api/state/player-action-requests', {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        mapId: payload.mapId,
+        combatId: payload.combatId,
+        requests: [...(queue.requests ?? []), payload],
+        updatedAt: Date.now(),
+      }),
+    })
+    if (!put.ok) throw new Error(`player-action request queue PUT failed: ${put.status}`)
+    const post = await fetch('http://127.0.0.1:6173/api/events/player-action-player-to-dm', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    })
+    if (!post.ok) throw new Error(`player-action event failed: ${post.status}`)
+  }, action)
+}
+
+async function loadPlayer2State<T>(page: Page, name: string): Promise<T> {
+  return page.evaluate(async (stateName) => {
+    const res = await fetch(`/api/state/${stateName}`)
+    if (!res.ok) throw new Error(`GET ${stateName} failed: ${res.status}`)
+    return res.json()
+  }, name) as Promise<T>
+}
+
+test('player2 port 6175 sends skill-id attack request to DM and receives red-dragon result', async ({
+  browser,
+  request,
+}) => {
+  const mapId = `e2e-player2-red-dragon-${Date.now()}`
+  await seedPlayer2VsRedDragon(request, mapId)
+
+  const context = await browser.newContext()
+  const dm = await context.newPage()
+  const player2 = await context.newPage()
+  await Promise.all([
+    dm.goto(`${DM}/maps`, { waitUntil: 'domcontentloaded' }),
+    player2.goto(`${PLAYER2}/maps`, { waitUntil: 'domcontentloaded' }),
+  ])
+
+  await expect
+    .poll(
+      async () => {
+        const combat = await getState<{ mapId?: string; active?: boolean; initiativeIndex?: number }>(request, 'combat')
+        return combat.mapId === mapId && combat.active === true && combat.initiativeIndex === 0
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true)
+
+  const now = Date.now()
+  const action = {
+    id: `${mapId}:player2-action:${now}:basic-shot`,
+    mapId,
+    combatId: `${mapId}:combat`,
+    sourceMode: 'player',
+    status: 'pending',
+    type: 'attack-token',
+    actorTokenId: 'player2-token',
+    characterId: 'player2-red-dragon-hero',
+    targetTokenId: 'red-dragon-token',
+    skillId: 'tree-basicShot',
+    round: 1,
+    initiativeIndex: 0,
+    seq: 1,
+    updatedAt: now,
+  }
+  await sendPlayer2Action(player2, action)
+
+  await expect
+    .poll(
+      async () => {
+        const ack = await getState<{ actionId?: string; status?: string; reason?: string }>(
+          request,
+          'player-action-ack',
+        )
+        return ack.actionId === action.id ? ack.status : ''
+      },
+      { timeout: 45_000 },
+    )
+    .toBe('accepted')
+
+  await expect
+    .poll(
+      async () => {
+        const maps = await getState<{ maps: Array<{ id: string; tokens: Array<{ id: string; hp?: number }> }> }>(
+          request,
+          'maps',
+        )
+        return maps.maps.find((map) => map.id === mapId)?.tokens.find((token) => token.id === 'red-dragon-token')?.hp
+      },
+      { timeout: 30_000 },
+    )
+    .toBeLessThan(52)
+
+  const player2Ack = await loadPlayer2State<{ actionId?: string; status?: string }>(player2, 'player-action-ack')
+  expect(player2Ack.actionId).toBe(action.id)
+  expect(player2Ack.status).toBe('accepted')
+
+  const player2Maps = await loadPlayer2State<{
+    maps: Array<{ id: string; tokens: Array<{ id: string; hp?: number; x: number; y: number }> }>
+  }>(player2, 'maps')
+  const player2Map = player2Maps.maps.find((map) => map.id === mapId)
+  const player2Hero = player2Map?.tokens.find((token) => token.id === 'player2-token')
+  const player2Dragon = player2Map?.tokens.find((token) => token.id === 'red-dragon-token')
+  expect(player2Hero).toMatchObject(center(2, 2))
+  expect(player2Dragon).toMatchObject(center(6, 2))
+  expect(player2Dragon?.hp).toBeLessThan(52)
+
+  const log = await getState<{ entries: Array<{ text: string }> }>(request, 'combat-log')
+  const text = log.entries.map((entry) => entry.text).join('\n')
+  expect(text).toContain('基础射击')
+  expect(text).toContain('红龙雏龙')
+
+  await context.close()
+})
+
+test('player2 queued movement is DM-authorized, spends AP, and syncs token position', async ({ browser, request }) => {
+  const mapId = `e2e-player2-red-dragon-move-${Date.now()}`
+  await seedPlayer2VsRedDragon(request, mapId)
+
+  const context = await browser.newContext()
+  const dm = await context.newPage()
+  const player2 = await context.newPage()
+  await Promise.all([
+    dm.goto(`${DM}/maps`, { waitUntil: 'domcontentloaded' }),
+    player2.goto(`${PLAYER2}/maps`, { waitUntil: 'domcontentloaded' }),
+  ])
+
+  const now = Date.now()
+  const targetPosition = center(3, 2)
+  const action = {
+    id: `${mapId}:player2-action:${now}:move`,
+    mapId,
+    combatId: `${mapId}:combat`,
+    sourceMode: 'player',
+    status: 'pending',
+    type: 'move-token',
+    actorTokenId: 'player2-token',
+    characterId: 'player2-red-dragon-hero',
+    targetPosition,
+    round: 1,
+    initiativeIndex: 0,
+    seq: 1,
+    updatedAt: now,
+  }
+  await sendPlayer2Action(player2, action)
+
+  await expect
+    .poll(
+      async () => {
+        const ack = await getState<{ actionId?: string; status?: string; acceptedPosition?: { x: number; y: number } }>(
+          request,
+          'player-action-ack',
+        )
+        return ack.actionId === action.id && ack.status === 'accepted' ? ack.acceptedPosition : null
+      },
+      { timeout: 30_000 },
+    )
+    .toMatchObject(targetPosition)
+
+  await expect
+    .poll(
+      async () => {
+        const characters = await getState<{ characters: Array<{ id: string; currentAP?: number }> }>(
+          request,
+          'characters',
+        )
+        return characters.characters.find((character) => character.id === 'player2-red-dragon-hero')?.currentAP
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(1)
+
+  const player2Maps = await loadPlayer2State<{
+    maps: Array<{ id: string; tokens: Array<{ id: string; x: number; y: number }> }>
+  }>(player2, 'maps')
+  const player2Hero = player2Maps.maps.find((map) => map.id === mapId)?.tokens.find((token) => token.id === 'player2-token')
+  expect(player2Hero).toMatchObject(targetPosition)
+
+  await context.close()
+})

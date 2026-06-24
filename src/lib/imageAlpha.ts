@@ -251,6 +251,10 @@ export function loadHuntingMarkIcon(): Promise<HTMLCanvasElement | null> {
   return loadBakedStatusIcon('/icons/hunting-mark.svg')
 }
 
+export function loadGaleComboIcon(): Promise<HTMLCanvasElement | null> {
+  return loadBakedStatusIcon('/icons/gale-combo-wind-preview.svg')
+}
+
 export function loadIllusionDanceIcon(): Promise<HTMLCanvasElement | null> {
   const canvas = document.createElement('canvas')
   canvas.width = 96
