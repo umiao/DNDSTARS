@@ -14,6 +14,9 @@ export const IMAGE_MAX_BYTES = 24 * 1024 * 1024
 export const EVENT_BACKLOG_LIMIT = 1200
 // 新订阅者只回放最近 N 条，而不是把整 1200 条全量灌给它（AC3）。
 export const EVENT_REPLAY_LIMIT = 100
+// [T-P1-421/AC5] 不同 channel 名总数上限（safeName 允许任意名累积 → 无界）。超过即按
+// Map 插入序淘汰最旧者（确定性 COUNT-CAP，非 TTL）。有活跃订阅者的 channel 受保护不被淘汰。
+export const EVENT_CHANNEL_LIMIT = 256
 
 // ── AC4：图片配额 ───────────────────────────────────────────────────────────
 // 最多保留多少张共享图片（含 meta，不计 .json）。超过时按 mtime 最旧优先 GC。
@@ -295,6 +298,23 @@ export function pushBacklog(backlog, payload) {
   return backlog
 }
 
+/**
+ * [T-P1-421/AC5] 限制 channel 总数：Map 保留插入序，从头删即淘汰最旧 channel。
+ * protectedChannels（如当前有活跃 SSE 订阅者的 channel）永不淘汰，避免会话中途清掉活跃 channel。
+ * 返回被淘汰的 channel 名数组（确定性，便于单测）。
+ */
+export function capEventChannels(eventBacklog, limit = EVENT_CHANNEL_LIMIT, protectedChannels = null) {
+  const evicted = []
+  if (eventBacklog.size <= limit) return evicted
+  for (const channel of [...eventBacklog.keys()]) {
+    if (eventBacklog.size <= limit) break
+    if (protectedChannels && protectedChannels.has(channel)) continue
+    eventBacklog.delete(channel)
+    evicted.push(channel)
+  }
+  return evicted
+}
+
 // ── 从请求头读取 secret（鉴权用）────────────────────────────────────────────
 export function extractSecret(req) {
   const header = req?.headers?.['x-stars-secret']
@@ -358,7 +378,11 @@ function addEventClient(ctx, channel, res) {
 
 function publishEvent(ctx, channel, payload) {
   const backlog = pushBacklog(ctx.eventBacklog.get(channel) ?? [], payload)
+  // LRU touch：delete+set 把该 channel 移到 Map 末尾，使「活跃 channel」始终最新、最后才被 cap 淘汰。
+  ctx.eventBacklog.delete(channel)
   ctx.eventBacklog.set(channel, backlog)
+  // [T-P1-421/AC5] channel 总数封顶；有活跃订阅者的 channel 受保护。
+  capEventChannels(ctx.eventBacklog, EVENT_CHANNEL_LIMIT, new Set(ctx.eventClients.keys()))
   const clients = ctx.eventClients.get(channel)
   if (!clients) return
   const text = `event: message\ndata: ${JSON.stringify(payload)}\n\n`

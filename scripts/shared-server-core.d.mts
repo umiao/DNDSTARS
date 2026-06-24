@@ -3,7 +3,14 @@ export const STATE_MAX_BYTES: number
 export const IMAGE_MAX_BYTES: number
 export const EVENT_BACKLOG_LIMIT: number
 export const EVENT_REPLAY_LIMIT: number
+export const EVENT_CHANNEL_LIMIT: number
 export const IMAGE_COUNT_LIMIT: number
+
+export function capEventChannels<T>(
+  eventBacklog: Map<string, T>,
+  limit?: number,
+  protectedChannels?: Set<string> | null,
+): string[]
 
 export class LockTimeoutError extends Error {
   code: 'ELOCKTIMEOUT'

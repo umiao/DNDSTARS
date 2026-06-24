@@ -6,9 +6,11 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   EVENT_BACKLOG_LIMIT,
+  EVENT_CHANNEL_LIMIT,
   EVENT_REPLAY_LIMIT,
   IMAGE_COUNT_LIMIT,
   LockTimeoutError,
+  capEventChannels,
   STATE_MAX_BYTES,
   atomicWriteImageLocked,
   atomicWriteJsonStateFreshLocked,
@@ -118,6 +120,37 @@ describe('backlog cap — AC3', () => {
 
   it('STATE_MAX_BYTES 是正数上限', () => {
     expect(STATE_MAX_BYTES).toBeGreaterThan(0)
+  })
+})
+
+describe('capEventChannels — AC5 channel COUNT-CAP（T-P1-421）', () => {
+  it('超过 limit 时按插入序淘汰最旧 channel（确定性）', () => {
+    const m = new Map<string, number[]>()
+    for (let i = 0; i < 5; i += 1) m.set(`ch${i}`, [i])
+    const evicted = capEventChannels(m, 3)
+    expect(evicted).toEqual(['ch0', 'ch1'])
+    expect([...m.keys()]).toEqual(['ch2', 'ch3', 'ch4'])
+  })
+
+  it('未超 limit 不淘汰任何 channel', () => {
+    const m = new Map<string, number[]>([['a', [1]], ['b', [2]]])
+    expect(capEventChannels(m, 8)).toEqual([])
+    expect(m.size).toBe(2)
+  })
+
+  it('受保护（活跃订阅）channel 永不被淘汰（会话中途不清活跃）', () => {
+    const m = new Map<string, number[]>()
+    for (let i = 0; i < 5; i += 1) m.set(`ch${i}`, [i])
+    // ch0 是最旧但活跃 → 跳过它，淘汰次旧的 ch1/ch2。
+    const evicted = capEventChannels(m, 3, new Set(['ch0']))
+    expect(evicted).toEqual(['ch1', 'ch2'])
+    expect(m.has('ch0')).toBe(true)
+    expect(m.size).toBe(3)
+  })
+
+  it('EVENT_CHANNEL_LIMIT 是正数且 < backlog 总量上限', () => {
+    expect(EVENT_CHANNEL_LIMIT).toBeGreaterThan(0)
+    expect(EVENT_CHANNEL_LIMIT).toBeLessThanOrEqual(EVENT_BACKLOG_LIMIT)
   })
 })
 
